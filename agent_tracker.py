@@ -1520,6 +1520,20 @@ class BrowserUseLogInterceptor(logging.Handler):
             str: Caminho do arquivo salvo
         """
         if hasattr(self, 'timeline_builder') and self.timeline_builder:
+            # Validação do filepath
+            if not filepath:
+                safe_filepath = os.path.join(self.log_dir or ".", "timeline.json")
+                logger.warning(f"Filepath inválido, usando padrão: {safe_filepath}")
+                filepath = safe_filepath
+                
+            # Garantir que o diretório existe
+            try:
+                os.makedirs(os.path.dirname(os.path.abspath(filepath)), exist_ok=True)
+            except Exception as e:
+                logger.error(f"Erro ao criar diretório para timeline: {e}")
+                # Tentar salvar no diretório atual como fallback
+                filepath = os.path.join(".", os.path.basename(filepath))
+                
             return self.timeline_builder.save_timeline(filepath)
         else:
             logger.error("Não foi possível salvar a timeline: timeline_builder não disponível")
@@ -1527,16 +1541,33 @@ class BrowserUseLogInterceptor(logging.Handler):
      
     def get_timeline(self):
         """
-        Retorna a timeline completa.
+        Retorna a timeline completa com validação de integridade.
         
         Returns:
             dict: Dados completos da timeline
         """
         if hasattr(self, 'timeline_builder') and self.timeline_builder:
-            return self.timeline_builder.get_timeline()
+            timeline_data = self.timeline_builder.get_timeline()
+            
+            # Validação e sanitização da timeline antes de retornar
+            # Garantir que campos obrigatórios existam
+            if "events" not in timeline_data:
+                timeline_data["events"] = []
+            if "total_steps" not in timeline_data:
+                timeline_data["total_steps"] = len([e for e in timeline_data.get("events", []) 
+                                                   if e.get("metadata", {}).get("step_number") is not None])
+            if "total_thoughts" not in timeline_data:
+                timeline_data["total_thoughts"] = len([e for e in timeline_data.get("events", [])
+                                                     if e.get("metadata", {}).get("thought_type") is not None])
+            
+            # Adicionar metadados de validação
+            timeline_data["validated"] = True
+            timeline_data["validation_timestamp"] = datetime.now().isoformat()
+            
+            return timeline_data
         else:
             logger.warning("Não foi possível obter a timeline: timeline_builder não disponível")
-            return {"events": [], "total_steps": 0, "total_thoughts": 0}
+            return {"events": [], "total_steps": 0, "total_thoughts": 0, "validated": False}
 
     def get_unknown_messages(self):
         """
@@ -2693,6 +2724,2237 @@ class AgentTracker:
             logger.info(f"Logs de pensamento salvos em: {filename}")
         except Exception as e:
             logger.error(f"Erro ao salvar logs de pensamento: {str(e)}")
+
+    def save_timeline(self, filepath):
+        """
+        Salva a timeline em um arquivo JSON.
+        
+        Args:
+            filepath (str): Caminho do arquivo onde a timeline será salva
+            
+        Returns:
+            str: Caminho do arquivo salvo
+        """
+        if hasattr(self, 'timeline_builder') and self.timeline_builder:
+            # Validação do filepath
+            if not filepath:
+                safe_filepath = os.path.join(self.log_dir or ".", "timeline.json")
+                logger.warning(f"Filepath inválido, usando padrão: {safe_filepath}")
+                filepath = safe_filepath
+                
+            # Garantir que o diretório existe
+            try:
+                os.makedirs(os.path.dirname(os.path.abspath(filepath)), exist_ok=True)
+            except Exception as e:
+                logger.error(f"Erro ao criar diretório para timeline: {e}")
+                # Tentar salvar no diretório atual como fallback
+                filepath = os.path.join(".", os.path.basename(filepath))
+                
+            return self.timeline_builder.save_timeline(filepath)
+        else:
+            logger.error("Não foi possível salvar a timeline: timeline_builder não disponível")
+            return None
+     
+    def get_timeline(self):
+        """
+        Retorna a timeline completa com validação de integridade.
+        
+        Returns:
+            dict: Dados completos da timeline
+        """
+        if hasattr(self, 'timeline_builder') and self.timeline_builder:
+            timeline_data = self.timeline_builder.get_timeline()
+            
+            # Validação e sanitização da timeline antes de retornar
+            # Garantir que campos obrigatórios existam
+            if "events" not in timeline_data:
+                timeline_data["events"] = []
+            if "total_steps" not in timeline_data:
+                timeline_data["total_steps"] = len([e for e in timeline_data.get("events", []) 
+                                                   if e.get("metadata", {}).get("step_number") is not None])
+            if "total_thoughts" not in timeline_data:
+                timeline_data["total_thoughts"] = len([e for e in timeline_data.get("events", [])
+                                                     if e.get("metadata", {}).get("thought_type") is not None])
+            
+            # Adicionar metadados de validação
+            timeline_data["validated"] = True
+            timeline_data["validation_timestamp"] = datetime.now().isoformat()
+            
+            return timeline_data
+        else:
+            logger.warning("Não foi possível obter a timeline: timeline_builder não disponível")
+            return {"events": [], "total_steps": 0, "total_thoughts": 0, "validated": False}
+
+    def get_unknown_messages(self):
+        """
+        Retorna a lista de mensagens não categorizadas capturadas durante o rastreamento.
+        
+        Returns:
+            List[Dict]: Lista de mensagens desconhecidas com seus timestamps
+        """
+        if hasattr(self, 'unknown_messages'):
+            return self.unknown_messages
+        else:
+            return []
+
+    def get_thoughts_for_step(self, step_number):
+        """
+        Retorna pensamentos para um passo específico.
+        
+        Args:
+            step_number: Número do passo
+            
+        Returns:
+            Lista de pensamentos ou None se não houver
+        """
+        return self.thoughts_by_step.get(step_number, [])
+
+    def _update_thought_stats(self, category):
+        """
+        Atualiza estatísticas de pensamentos.
+        
+        Args:
+            category (str): Categoria de pensamento
+        """
+        # Garantir que categoria existe nas estatísticas
+        if category not in self.thought_stats:
+            self.thought_stats[category] = 0
+            
+        # Incrementar contador
+        self.thought_stats[category] += 1
+            
+    async def _save_unknown_messages_periodically(self):
+        """
+        Salva periodicamente as mensagens desconhecidas no arquivo JSON.
+        """
+        try:
+            while True:
+                await asyncio.sleep(30)  # Salvar a cada 30 segundos
+                if hasattr(self, 'unknown_messages') and self.unknown_messages and hasattr(self, 'unknown_messages_file'):
+                    try:
+                        with open(self.unknown_messages_file, 'w', encoding='utf-8') as f:
+                            json.dump(self.unknown_messages, f, indent=2, ensure_ascii=False)
+                        logger.debug(f"Mensagens desconhecidas salvas em {self.unknown_messages_file}")
+                    except Exception as e:
+                        logger.error(f"Erro ao salvar mensagens desconhecidas: {e}")
+        except asyncio.CancelledError:
+            # Tarefa cancelada, salvar uma última vez
+            if hasattr(self, 'unknown_messages') and self.unknown_messages and hasattr(self, 'unknown_messages_file'):
+                try:
+                    with open(self.unknown_messages_file, 'w', encoding='utf-8') as f:
+                        json.dump(self.unknown_messages, f, indent=2, ensure_ascii=False)
+                    logger.debug(f"Mensagens desconhecidas salvas em {self.unknown_messages_file} (final)")
+                except Exception as e:
+                    logger.error(f"Erro ao salvar mensagens desconhecidas (final): {e}")
+        except Exception as e:
+            logger.error(f"Erro em _save_unknown_messages_periodically: {e}")
+    
+    def get_resumo_execucao(self) -> Dict[str, Any]:
+        """
+        Gera um resumo da execução atual
+        
+        Returns:
+            Dict[str, Any]: Resumo da execução
+        """
+        duracao = (datetime.now() - self.start_time).total_seconds()
+        
+        return {
+            "prompt": self.prompt[:100] + "..." if self.prompt and len(self.prompt) > 100 else self.prompt,
+            "inicio": self.start_time.isoformat(),
+            "duracao_segundos": duracao,
+            "total_eventos": self.total_events,
+            "passos": self.steps_count,
+            "navegacoes": self.navigation_count,
+            "interacoes": self.interaction_count,
+            "screenshots": self.screenshot_count,
+            "erros": self.error_count,
+            "distribuicao_categorias": self.stats_por_categoria
+        }
+
+    def _process_llm_data(self, pattern_name, match, message):
+        """
+        Processa dados relacionados ao LLM capturados nos logs.
+        
+        Args:
+            pattern_name (str): Nome do padrão que identificou os dados de LLM
+            match (re.Match): Objeto match com os grupos capturados
+            message (str): Mensagem completa do log
+        """
+        try:
+            # Determinar o tipo de evento LLM
+            event_type = pattern_name
+            
+            # Extrair dados com base no tipo de padrão
+            if pattern_name == "llm_request" or pattern_name == "llm_request_alt":
+                # Capturar dados de requisição
+                if pattern_name == "llm_request":
+                    # Formato: "LLM Request: model=XXX, prompt=YYY, tokens=ZZZ"
+                    model = match.group(1).strip()
+                    prompt_summary = match.group(2).strip()
+                    prompt_tokens = int(match.group(3))
+                else:
+                    # Formato alternativo: "Sending request to XXX with YYY tokens"
+                    model = match.group(1).strip()
+                    prompt_tokens = int(match.group(2))
+                    prompt_summary = "N/A"
+                
+                # Registrar no tracking atual
+                self.llm_tracking["current_model"] = model
+                self.llm_tracking["current_prompt_tokens"] = prompt_tokens
+                self.llm_tracking["current_step"] = self.current_step
+                
+                # Criar evento
+                event_data = {
+                    "model": model,
+                    "prompt": prompt_summary[:100] + "..." if len(prompt_summary) > 100 else prompt_summary,
+                    "prompt_tokens": prompt_tokens,
+                    "timestamp": datetime.now().isoformat()
+                }
+                
+                # Registrar na timeline se disponível
+                if hasattr(self, 'timeline_builder') and self.current_step:
+                    self.timeline_builder.add_llm_event(
+                        step_number=self.current_step or 0,
+                        event_type="llm_request",
+                        data=event_data
+                    )
+                    
+                # Atualizar estatísticas
+                self.llm_stats["total_calls"] += 1
+                self.llm_stats["total_tokens"] += prompt_tokens
+                
+                # Registrar no modelo específico
+                if model not in self.llm_stats["models"]:
+                    self.llm_stats["models"][model] = {
+                        "calls": 0,
+                        "total_prompt_tokens": 0,
+                        "total_completion_tokens": 0,
+                        "total_cost": 0.0
+                    }
+                    
+                self.llm_stats["models"][model]["calls"] += 1
+                self.llm_stats["models"][model]["total_prompt_tokens"] += prompt_tokens
+                
+            elif pattern_name == "llm_response" or pattern_name == "llm_response_alt":
+                # Capturar dados de resposta
+                if pattern_name == "llm_response":
+                    # Formato: "LLM Response: model=XXX, response=YYY, tokens=ZZZ"
+                    model = match.group(1).strip()
+                    response_summary = match.group(2).strip()
+                    completion_tokens = int(match.group(3))
+                else:
+                    # Formato alternativo: "Received response from XXX with YYY tokens"
+                    model = match.group(1).strip()
+                    completion_tokens = int(match.group(2))
+                    response_summary = "N/A"
+                
+                # Registrar no tracking atual
+                self.llm_tracking["current_completion_tokens"] = completion_tokens
+                
+                # Criar evento
+                event_data = {
+                    "model": model,
+                    "response": response_summary[:100] + "..." if len(response_summary) > 100 else response_summary,
+                    "completion_tokens": completion_tokens,
+                    "timestamp": datetime.now().isoformat()
+                }
+                
+                # Registrar na timeline se disponível
+                if hasattr(self, 'timeline_builder'):
+                    self.timeline_builder.add_llm_event(
+                        step_number=self.current_step or self.llm_tracking.get("current_step", 0),
+                        event_type="llm_response",
+                        data=event_data
+                    )
+                    
+                # Atualizar estatísticas
+                self.llm_stats["total_tokens"] += completion_tokens
+                
+                # Registrar no modelo específico
+                if model not in self.llm_stats["models"]:
+                    self.llm_stats["models"][model] = {
+                        "calls": 0,
+                        "total_prompt_tokens": 0,
+                        "total_completion_tokens": 0,
+                        "total_cost": 0.0
+                    }
+                    
+                self.llm_stats["models"][model]["total_completion_tokens"] += completion_tokens
+                
+            elif pattern_name == "llm_cost" or pattern_name == "llm_cost_alt":
+                # Capturar dados de custo
+                cost = float(match.group(1))
+                
+                # Registrar no tracking atual
+                self.llm_tracking["current_cost"] = cost
+                
+                # Criar evento
+                event_data = {
+                    "cost": cost,
+                    "model": self.llm_tracking.get("current_model", "unknown"),
+                    "timestamp": datetime.now().isoformat()
+                }
+                
+                # Registrar na timeline se disponível
+                if hasattr(self, 'timeline_builder'):
+                    self.timeline_builder.add_llm_event(
+                        step_number=self.current_step or self.llm_tracking.get("current_step", 0),
+                        event_type="llm_cost",
+                        data=event_data
+                    )
+                    
+                # Atualizar estatísticas
+                self.llm_stats["estimated_cost"] += cost
+                
+                # Registrar no modelo específico se disponível
+                model = self.llm_tracking.get("current_model")
+                if model and model in self.llm_stats["models"]:
+                    self.llm_stats["models"][model]["total_cost"] += cost
+                
+            # Adicionar ao passo atual se existir
+            if self.current_step:
+                # Encontrar o passo na timeline
+                for step in self.timeline:
+                    if step.get("step_number") == self.current_step:
+                        # Garantir que a lista de eventos LLM existe
+                        if "llm_events" not in step:
+                            step["llm_events"] = []
+                            
+                        # Adicionar evento
+                        step["llm_events"].append({
+                            "type": event_type,
+                            "timestamp": datetime.now().isoformat(),
+                            "data": match.groups()
+                        })
+                        break
+            
+            logger.debug(f"Dados de LLM processados: {pattern_name}")
+            
+        except Exception as e:
+            logger.error(f"Erro ao processar dados de LLM ({pattern_name}): {e}")
+            
+    async def finish_tracking(self):
+        """
+        Finaliza o processo de rastreamento, salvando dados pendentes e limpando recursos.
+        
+        Este método deve ser chamado antes de desinstalar o interceptador para garantir que
+        todos os dados sejam salvos adequadamente.
+        
+        Returns:
+            Dict[str, Any]: Resumo dos dados capturados durante o tracking
+        """
+        if not self.tracking_enabled:
+            logger.warning("O tracking já estava desativado.")
+            return {}
+            
+        logger.info("Finalizando tracking de logs do browser-use...")
+        
+        try:
+            # Salvar mensagens desconhecidas uma última vez
+            if hasattr(self, 'unknown_messages') and self.unknown_messages and hasattr(self, 'unknown_messages_file'):
+                try:
+                    with open(self.unknown_messages_file, 'w', encoding='utf-8') as f:
+                        json.dump(self.unknown_messages, f, indent=2, ensure_ascii=False)
+                    logger.debug(f"Mensagens desconhecidas salvas em {self.unknown_messages_file} (final)")
+                except Exception as e:
+                    logger.error(f"Erro ao salvar mensagens desconhecidas (final): {e}")
+            
+            # Cancelar tarefa de salvamento periódico
+            if hasattr(self, '_save_unknown_messages_task'):
+                self._save_unknown_messages_task.cancel()
+                try:
+                    # Aguardar a tarefa ser cancelada
+                    await asyncio.wait_for(asyncio.shield(self._save_unknown_messages_task), timeout=2.0)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass  # Esperado quando a tarefa é cancelada
+            
+            # Finalizar timeline
+            if hasattr(self, 'timeline_builder'):
+                self.timeline_builder.stop_timer()
+                
+                # Registrar evento de encerramento na timeline
+                self.timeline_builder.add_event(
+                    title="Interceptador Desativado",
+                    description="Fim do tracking de logs do browser-use",
+                    icon="⏹️",
+                    timestamp=datetime.now().isoformat()
+                )
+                
+                # Salvar timeline se temos diretório de log
+                if self.log_dir:
+                    timeline_file = os.path.join(self.log_dir, "timeline.json")
+                    try:
+                        with open(timeline_file, 'w', encoding='utf-8') as f:
+                            json.dump({
+                                "title": self.timeline_builder.title,
+                                "start_time": self.start_time.isoformat(),
+                                "end_time": datetime.now().isoformat(),
+                                "events": self.timeline_builder.events,
+                                "total_steps": len([e for e in self.timeline_builder.events if "step_number" in e.get("metadata", {})]),
+                                "total_thoughts": self.total_thoughts_processed
+                            }, f, indent=2, ensure_ascii=False)
+                        logger.info(f"Timeline salva em {timeline_file}")
+                    except Exception as e:
+                        logger.error(f"Erro ao salvar timeline: {e}")
+            
+            # Calcular duração do tracking
+            duration = (datetime.now() - self.start_time).total_seconds()
+            
+            # Marcar tracking como desativado
+            self.tracking_enabled = False
+            
+            # Gerar resumo dos dados capturados
+            summary = {
+                "duration_seconds": duration,
+                "total_thoughts": self.total_thoughts_processed,
+                "thought_stats": self.thought_stats,
+                "total_steps": len(self.timeline),
+                "llm_stats": self.llm_stats,
+                "unknown_messages_count": len(self.unknown_messages) if hasattr(self, 'unknown_messages') else 0
+            }
+            
+            # Salvar resumo se temos diretório de log
+            if self.log_dir:
+                summary_file = os.path.join(self.log_dir, "tracking_summary.json")
+                try:
+                    with open(summary_file, 'w', encoding='utf-8') as f:
+                        json.dump(summary, f, indent=2, ensure_ascii=False)
+                    logger.info(f"Resumo do tracking salvo em {summary_file}")
+                except Exception as e:
+                    logger.error(f"Erro ao salvar resumo: {e}")
+            
+            # Salvar também os pensamentos capturados
+            if self.log_dir:
+                thoughts_file = os.path.join(self.log_dir, "thinking_logs.json")
+                try:
+                    # Extrair pensamentos de todos os passos
+                    all_thoughts = []
+                    for step in self.timeline:
+                        step_thoughts = []
+                        for thought in step.get("thoughts", []):
+                            step_thoughts.append({
+                                "step": step.get("step_number"),
+                                "type": thought.get("type"),
+                                "content": thought.get("content"),
+                                "timestamp": thought.get("timestamp")
+                            })
+                        all_thoughts.extend(step_thoughts)
+                    
+                    with open(thoughts_file, 'w', encoding='utf-8') as f:
+                        json.dump(all_thoughts, f, indent=2, ensure_ascii=False)
+                    logger.info(f"Pensamentos salvos em {thoughts_file}")
+                except Exception as e:
+                    logger.error(f"Erro ao salvar pensamentos: {e}")
+            
+            logger.info(f"Tracking finalizado após {duration:.1f} segundos")
+            logger.info(f"Total de pensamentos: {self.total_thoughts_processed}")
+            logger.info(f"Total de passos: {len(self.timeline)}")
+            
+            return summary
+            
+        except Exception as e:
+            logger.error(f"Erro ao finalizar tracking: {e}")
+            logger.error(traceback.format_exc())
+            self.tracking_enabled = False
+            return {
+                "error": str(e),
+                "total_thoughts": self.total_thoughts_processed,
+                "total_steps": len(self.timeline)
+            }
+
+    def desinstalar(self):
+        """
+        Remove o interceptador do sistema de logging e limpa recursos.
+        
+        Este método deve ser chamado para encerrar o interceptador após o uso.
+        Recomenda-se chamar finish_tracking() antes deste método para garantir
+        que todos os dados sejam salvos corretamente.
+        
+        Returns:
+            bool: True se o interceptador foi desinstalado com sucesso
+        """
+        try:
+            # Desativar tracking
+            self.tracking_enabled = False
+            
+            # Registrar evento de encerramento na timeline se disponível
+            if hasattr(self, 'timeline_builder'):
+                try:
+                    self.timeline_builder.add_event(
+                        title="Interceptador Desinstalado",
+                        description="Interceptador de logs removido do sistema",
+                        icon="🛑",
+                        timestamp=datetime.now().isoformat()
+                    )
+                except Exception as e:
+                    logger.error(f"Erro ao registrar evento de desinstalação: {e}")
+            
+            # Remover o handler do logger raiz
+            root_logger = logging.getLogger()
+            if self in root_logger.handlers:
+                root_logger.removeHandler(self)
+                
+            # Cancelar tarefas pendentes
+            for task in self._pending_tasks:
+                if not task.done():
+                    task.cancel()
+            
+            # Cancelar a tarefa de salvamento periódico se estiver ativa
+            if hasattr(self, '_save_unknown_messages_task') and self._save_unknown_messages_task and not self._save_unknown_messages_task.done():
+                try:
+                    self._save_unknown_messages_task.cancel()
+                except Exception as e:
+                    logger.error(f"Erro ao cancelar tarefa de salvamento: {e}")
+            
+            logger.info("Interceptador de logs desinstalado com sucesso")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Erro ao desinstalar interceptador: {e}")
+            logger.error(traceback.format_exc())
+            return False
+    
+    def get_thoughts_summary(self):
+        """
+        Gera um resumo estatístico dos pensamentos capturados.
+        
+        Returns:
+            Dict[str, Any]: Resumo estatístico dos pensamentos
+        """
+        # Copiar estatísticas atuais
+        stats = {
+            "total_thoughts": sum(self.thought_stats.values()),
+            "categories": {k: v for k, v in self.thought_stats.items() if k != "unknown"},
+            "unknown": self.thought_stats.get("unknown", 0)
+        }
+        
+        # Se temos timeline, adicionar pensamentos por passo
+        if self.timeline:
+            thoughts_by_step = {}
+            for step in self.timeline:
+                step_number = step.get("step_number")
+                step_thoughts = step.get("thoughts", [])
+                thoughts_by_step[step_number] = len(step_thoughts)
+            
+            stats["step_count"] = len(self.timeline)
+            stats["thoughts_by_step"] = thoughts_by_step
+            
+            # Adicionar estatísticas de ações se disponíveis
+            action_stats = self._get_action_stats()
+            if action_stats:
+                stats["actions"] = action_stats
+        
+        # Adicionar estatísticas sobre o processamento
+        if hasattr(self, 'total_thoughts_detected') and hasattr(self, 'total_thoughts_processed'):
+            stats["processing_stats"] = {
+                "detected": self.total_thoughts_detected,
+                "processed": self.total_thoughts_processed,
+                "processing_rate": round((self.total_thoughts_processed / self.total_thoughts_detected) * 100, 2) if self.total_thoughts_detected > 0 else 0
+            }
+        
+        return stats
+    
+    def _get_action_stats(self):
+        """
+        Gera estatísticas sobre as ações detectadas.
+        
+        Returns:
+            Dict[str, Any]: Estatísticas de ações por tipo
+        """
+        # Inicializar contadores
+        action_counts = {}
+        total_actions = 0
+        
+        # Contar ações por tipo em cada passo
+        for step in self.timeline:
+            actions = step.get("actions", [])
+            for action in actions:
+                action_type = action.get("type", "unknown")
+                if action_type not in action_counts:
+                    action_counts[action_type] = 0
+                action_counts[action_type] += 1
+                total_actions += 1
+        
+        # Se não há ações, retornar None
+        if not total_actions:
+            return None
+            
+        # Calcular distribuição percentual
+        distribution = {}
+        for action_type, count in action_counts.items():
+            distribution[action_type] = round((count / total_actions) * 100, 2)
+        
+        # Agrupar ações por passo
+        actions_by_step = {}
+        for step in self.timeline:
+            step_number = step.get("step_number")
+            actions = step.get("actions", [])
+            if actions:
+                actions_by_step[step_number] = len(actions)
+        
+        return {
+            "total_actions": total_actions,
+            "action_counts": action_counts,
+            "distribution": distribution,
+            "actions_by_step": actions_by_step,
+            "actions_per_step": round(total_actions / len(self.timeline), 2) if self.timeline else 0
+        }
+    
+    def _update_thought_stats(self, thought_type):
+        """
+        Atualiza as estatísticas de pensamentos por categoria.
+        
+        Args:
+            thought_type (str): O tipo normalizado de pensamento
+        """
+        # Garantir que categoria existe nas estatísticas
+        if thought_type not in self.thought_stats:
+            self.thought_stats[thought_type] = 0
+            
+        # Incrementar contador
+        self.thought_stats[thought_type] += 1
+    
+    def _process_action(self, pattern_name, content, message, explicit_type=None):
+        """
+        Processa ações detectadas nas mensagens de log.
+        
+        Args:
+            pattern_name (str): Nome do padrão que identificou a ação
+            content (str): Conteúdo da ação (possivelmente em formato JSON)
+            message (str): Mensagem completa do log
+            explicit_type (str, optional): Tipo explícito da ação, se capturado no pattern
+        """
+        try:
+            # Determinar o tipo de ação com base no pattern_name ou explicit_type
+            if explicit_type:
+                # Usar o tipo explícito fornecido pelo padrão action_json_with_type
+                action_type = explicit_type
+                # Tentar parsear como JSON
+                try:
+                    action_data = json.loads(content)
+                except json.JSONDecodeError:
+                    action_data = {"text": content}
+                    if self.debug_mode:
+                        logger.warning(f"Falha ao parsear ação como JSON apesar do tipo explícito '{explicit_type}': {content}")
+            elif pattern_name == "action" or pattern_name == "action_result":
+                # Ação em formato texto simples
+                action_type = "generic"
+                action_data = {"text": content}
+            else:
+                # Tentar parsear como JSON
+                try:
+                    action_data = json.loads(content)
+                    
+                    # Determinar o tipo de ação baseado no pattern ou no conteúdo
+                    if pattern_name == "navigation_action":
+                        action_type = "navigation"
+                    elif pattern_name == "click_action":
+                        action_type = "click"
+                    elif pattern_name == "extraction_action":
+                        action_type = "extraction"
+                    elif pattern_name == "form_action":
+                        action_type = "form"
+                    elif "type" in action_data:
+                        # Usar o tipo definido no próprio JSON
+                        action_type = action_data["type"]
+                    else:
+                        # Inferir o tipo baseado nas chaves presentes
+                        if "url" in action_data:
+                            action_type = "navigation"
+                        elif "selector" in action_data or "element" in action_data:
+                            action_type = "click"
+                        elif "extract" in action_data or "data" in action_data:
+                            action_type = "extraction"
+                        elif "form" in action_data or "inputs" in action_data:
+                            action_type = "form"
+                        else:
+                            action_type = "unknown"
+                except json.JSONDecodeError:
+                    # Não é JSON válido, tratar como texto
+                    action_type = "text"
+                    action_data = {"text": content}
+                    if self.debug_mode:
+                        logger.warning(f"Falha ao parsear ação como JSON: {content}")
+                        
+            # Registrar a ação no passo atual
+            if self.current_step:
+                # Encontrar o passo atual na timeline
+                for step in self.timeline:
+                    if step.get("step_number") == self.current_step:
+                        # Garantir que a lista de ações existe
+                        if "actions" not in step:
+                            step["actions"] = []
+                        
+                        # Adicionar ação
+                        step["actions"].append({
+                            "type": action_type,
+                            "data": action_data,
+                            "timestamp": datetime.now().isoformat(),
+                            "raw_message": message
+                        })
+                        
+                        # Registrar na timeline, se disponível
+                        if hasattr(self, 'timeline_builder'):
+                            # Determinar ícone com base no tipo de ação
+                            icon = "🔍"  # Ícone padrão para ação genérica
+                            if action_type == "navigation":
+                                icon = "🌐"
+                            elif action_type == "click":
+                                icon = "👆"
+                            elif action_type == "extraction":
+                                icon = "📊"
+                            elif action_type == "form":
+                                icon = "📝"
+                            
+                            # Preparar descrição compacta da ação
+                            description = self._create_action_description(action_type, action_data)
+                            
+                            # Adicionar à timeline
+                            self.timeline_builder.add_event(
+                                title=f"Ação: {action_type.capitalize()}",
+                                description=description,
+                                icon=icon,
+                                metadata={
+                                    "step_number": self.current_step,
+                                    "action_type": action_type,
+                                    "action_data": action_data
+                                }
+                            )
+                        
+                        logger.debug(f"Ação do tipo {action_type} adicionada ao passo {self.current_step}")
+                        break
+            
+            # Se não houver passo atual, registrar como desconhecido para análise posterior
+            else:
+                if hasattr(self, 'unknown_messages'):
+                    self.unknown_messages.append({
+                        "message": message,
+                        "action_content": content,
+                        "action_type": action_type,
+                        "timestamp": datetime.now().isoformat(),
+                        "reason": "Nenhum passo atual definido para associar a ação"
+                    })
+                logger.warning(f"Ação detectada mas nenhum passo atual: {action_type}")
+                
+        except Exception as e:
+            logger.error(f"Erro ao processar ação ({pattern_name}): {e}")
+            if hasattr(self, 'unknown_messages'):
+                self.unknown_messages.append({
+                    "message": message,
+                    "action_content": content,
+                    "timestamp": datetime.now().isoformat(),
+                    "error": str(e),
+                    "reason": "Erro ao processar ação"
+                })
+    
+    def _create_action_description(self, action_type, action_data):
+        """
+        Cria uma descrição legível para uma ação com base em seu tipo e dados.
+        
+        Args:
+            action_type (str): Tipo da ação
+            action_data (dict): Dados da ação
+            
+        Returns:
+            str: Descrição formatada da ação
+        """
+        if action_type == "navigation":
+            if "url" in action_data:
+                return f"Navegação para: {action_data['url']}"
+            else:
+                return "Navegação (URL não especificada)"
+                
+        elif action_type == "click":
+            if "selector" in action_data:
+                return f"Clique em: {action_data['selector']}"
+            elif "element" in action_data:
+                return f"Clique em: {action_data['element']}"
+            else:
+                return "Clique (elemento não especificado)"
+                
+        elif action_type == "extraction":
+            if "selector" in action_data:
+                return f"Extração de dados do elemento: {action_data['selector']}"
+            elif "data" in action_data:
+                data_keys = list(action_data["data"].keys()) if isinstance(action_data["data"], dict) else []
+                if data_keys:
+                    return f"Extração de dados: {', '.join(data_keys[:3])}" + ("..." if len(data_keys) > 3 else "")
+                else:
+                    return "Extração de dados"
+            else:
+                return "Extração de dados"
+                
+        elif action_type == "form":
+            if "form" in action_data and "selector" in action_data["form"]:
+                return f"Preenchimento de formulário: {action_data['form']['selector']}"
+            elif "inputs" in action_data:
+                input_count = len(action_data["inputs"]) if isinstance(action_data["inputs"], list) else 0
+                return f"Preenchimento de formulário com {input_count} campo(s)"
+            else:
+                return "Preenchimento de formulário"
+                
+        elif action_type == "text" or action_type == "generic":
+            if "text" in action_data:
+                text = action_data["text"]
+                # Limitar o tamanho do texto para a descrição
+                if len(text) > 50:
+                    return text[:47] + "..."
+                else:
+                    return text
+            else:
+                return "Ação genérica"
+                
+        else:
+            # Para outros tipos de ações, mostrar as primeiras chaves disponíveis
+            if isinstance(action_data, dict):
+                keys = list(action_data.keys())
+                if keys:
+                    key_values = []
+                    for key in keys[:3]:  # Mostrar no máximo 3 chaves
+                        value = action_data[key]
+                        if isinstance(value, (str, int, float, bool)):
+                            # Limitar o tamanho do valor
+                            str_value = str(value)
+                            if len(str_value) > 20:
+                                str_value = str_value[:17] + "..."
+                            key_values.append(f"{key}: {str_value}")
+                    
+                    return f"Ação {action_type}: {', '.join(key_values)}" + ("..." if len(keys) > 3 else "")
+            
+            return f"Ação {action_type}"
+
+    def _add_thought_to_step(self, step_number, thought_type, content, metadata=None, timestamp=None):
+        """
+        Adiciona um pensamento ao passo atual.
+        
+        Args:
+            step_number (int): Número do passo
+            thought_type (str): Tipo de pensamento (evaluation, memory, next_goal, thought)
+            content (str): Conteúdo do pensamento
+            metadata (dict, optional): Metadados adicionais
+            timestamp (str, optional): Timestamp ISO do evento
+        """
+        # Validação e sanitização dos dados
+        if not isinstance(step_number, int) or step_number < 0:
+            logger.warning(f"Número de passo inválido: {step_number}, usando passo atual")
+            step_number = self.current_step or 0
+            
+        if not content or not isinstance(content, str):
+            logger.warning(f"Conteúdo de pensamento inválido: {content}")
+            content = str(content) if content is not None else "Pensamento sem conteúdo"
+        
+        # Normalizar tipo de pensamento
+        normalized_type = self._normalize_thought_type(thought_type)
+        
+        # Inicializar estrutura para este passo se necessário
+        if step_number not in self.thoughts_by_step:
+            self.thoughts_by_step[step_number] = []
+            
+        # Verificar se o pensamento já foi registrado (evitar duplicatas)
+        thought_key = f"{step_number}:{normalized_type}:{content}"
+        if thought_key in self.recent_messages:
+            logger.debug(f"Pensamento duplicado ignorado: {thought_key[:50]}...")
+            return
+            
+        # Adicionar à lista de mensagens recentes (para deduplicação)
+        self.recent_messages.add(thought_key)
+        
+        # Manter o tamanho do cache limitado
+        if len(self.recent_messages) > self.message_cache_size:
+            # Remover itens mais antigos quando o cache está cheio
+            excess = len(self.recent_messages) - self.message_cache_size
+            self.recent_messages = set(list(self.recent_messages)[excess:])
+        
+        # Adicionar pensamento à timeline se disponível
+        if hasattr(self, 'timeline_builder'):
+            # Validar e sanitizar os metadados
+            safe_metadata = {}
+            if metadata and isinstance(metadata, dict):
+                # Copiar apenas chaves com valores válidos para JSON
+                for k, v in metadata.items():
+                    try:
+                        # Testar serialização
+                        json.dumps({k: v})
+                        safe_metadata[k] = v
+                    except (TypeError, OverflowError):
+                        safe_metadata[k] = str(v)
+            
+            self.timeline_builder.add_thought(
+                step_number=step_number,
+                thought_type=normalized_type,
+                content=content,
+                metadata=safe_metadata,
+                timestamp=timestamp
+            )
+        
+        # Registrar para o passo
+        thought_data = {
+            "type": normalized_type,
+            "original_type": thought_type,
+            "content": content,
+            "timestamp": timestamp or datetime.now().isoformat(),
+            "metadata": metadata or {}
+        }
+        
+        self.thoughts_by_step[step_number].append(thought_data)
+        
+        # Atualizar estatísticas
+        self._update_thought_stats(normalized_type)
+        
+        # Chamar callback se disponível
+        if self.callback_pensamento:
+            try:
+                self.callback_pensamento(step_number, normalized_type, content, thought_data)
+            except Exception as e:
+                logger.error(f"Erro no callback_pensamento: {e}")
+                
+        self.total_thoughts_processed += 1
+        logger.debug(f"Pensamento processado: Passo {step_number}, tipo {normalized_type}")
+
+    def _normalize_thought_type(self, thought_type):
+        """
+        Normaliza tipos de pensamento para categorias padrão.
+        
+        Args:
+            thought_type (str): Tipo original do pensamento
+            
+        Returns:
+            str: Tipo normalizado (evaluation, memory, next_goal, thought)
+        """
+        if not thought_type:
+            return "thought"
+            
+        thought_type = thought_type.lower()
+        
+        # Normalizar categorias
+        if any(term in thought_type for term in ["eval", "assess", "verdict", "opinion", "judgement", "judgment"]):
+            return "evaluation"
+        elif any(term in thought_type for term in ["memory", "remember", "recall", "remembered"]):
+            return "memory"
+        elif any(term in thought_type for term in ["goal", "next", "aim", "target", "intention", "plan"]):
+            return "next_goal"
+        else:
+            return "thought"
+
+    def add_event_to_timeline(self, title, description=None, icon=None, timestamp=None, metadata=None, validate=True):
+        """
+        Adiciona um evento à timeline com validação de dados.
+        
+        Args:
+            title (str): Título do evento
+            description (str, optional): Descrição detalhada do evento
+            icon (str, optional): Ícone a ser exibido (emoji ou código HTML)
+            timestamp (str, optional): Timestamp ISO do evento (usa o atual se não fornecido)
+            metadata (dict, optional): Metadados adicionais do evento
+            validate (bool): Se True, valida e sanitiza os dados antes de adicionar
+        """
+        if not hasattr(self, 'timeline_builder'):
+            logger.warning("Timeline builder não disponível para adicionar evento")
+            return
+        
+        if validate:
+            # Validar e sanitizar os dados
+            if not title or not isinstance(title, str):
+                title = "Evento sem título" if not title else str(title)
+                
+            if description and not isinstance(description, str):
+                description = str(description)
+                
+            if metadata and not isinstance(metadata, dict):
+                logger.warning(f"Metadados inválidos, tipo: {type(metadata)}")
+                metadata = {"original": str(metadata)}
+                
+            # Sanitizar metadados para garantir serializabilidade JSON
+            if metadata:
+                safe_metadata = {}
+                for k, v in metadata.items():
+                    try:
+                        # Testar serialização
+                        json.dumps({k: v})
+                        safe_metadata[k] = v
+                    except (TypeError, OverflowError):
+                        # Converter para string se não for serializável
+                        safe_metadata[k] = str(v)
+                metadata = safe_metadata
+        
+        # Adicionar à timeline
+        self.timeline_builder.add_event(
+            title=title,
+            description=description,
+            icon=icon,
+            timestamp=timestamp,
+            metadata=metadata
+        )
+        
+        logger.debug(f"Evento adicionado à timeline: {title}")
+
+def similarity_score(text1, text2):
+    """
+    Calcula um score de similaridade básico entre dois textos.
+    Usado para detectar pensamentos duplicados.
+    
+    Args:
+        text1 (str): Primeiro texto
+        text2 (str): Segundo texto
+        
+    Returns:
+        float: Score de similaridade entre 0 e 1
+    """
+    if not text1 or not text2:
+        return 0
+    
+    # Normalizar textos
+    text1 = text1.lower().strip()
+    text2 = text2.lower().strip()
+    
+    # Se os textos são idênticos, retornar 1
+    if text1 == text2:
+        return 1.0
+    
+    # Se um texto está contido no outro, retornar um score alto
+    if text1 in text2 or text2 in text1:
+        return 0.9
+    
+    # Calcular similaridade baseada em palavras comuns
+    words1 = set(text1.split())
+    words2 = set(text2.split())
+    
+    # Calcular interseção e união
+    common_words = words1.intersection(words2)
+    all_words = words1.union(words2)
+    
+    # Evitar divisão por zero
+    if not all_words:
+        return 0
+    
+    # Calcular coeficiente de Jaccard
+    return len(common_words) / len(all_words)
+
+class AgentTracker:
+    """
+    Classe principal para rastreamento de execução de agentes.
+    Permite capturar eventos, passos, pensamentos e estatísticas da execução.
+    """
+    def __init__(self, log_dir="agent_logs", include_screenshots=True, auto_summarize=True, compression_level=9):
+        """
+        Inicializa o rastreador de agente.
+        
+        Args:
+            log_dir (str): Diretório para salvar logs e arquivos relacionados
+            include_screenshots (bool): Se deve incluir screenshots nos logs
+            auto_summarize (bool): Se deve gerar resumo automaticamente ao finalizar
+            compression_level (int): Nível de compressão para screenshots (0-9)
+        """
+        self.logger = logging.getLogger("agent_tracker")
+        
+        # Configurar diretório de logs com timestamp para evitar sobrescrita
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.log_dir = os.path.join(log_dir, f"agent_run_{timestamp}")
+        os.makedirs(self.log_dir, exist_ok=True)
+        
+        # Arquivo de log principal
+        self.log_file = os.path.join(self.log_dir, "agent_events.json")
+        
+        # Configurações
+        self.include_screenshots = include_screenshots
+        self.auto_summarize = auto_summarize
+        self.compression_level = compression_level
+        
+        # Estado interno
+        self.eventos = []
+        self.start_time = datetime.now()
+        self.prompt = None
+        
+        # Contadores
+        self.total_events = 0
+        self.steps_count = 0
+        self.navigation_count = 0
+        self.interaction_count = 0
+        self.screenshot_count = 0
+        self.error_count = 0
+        
+        # Estatísticas por categoria
+        self.stats_por_categoria = {}
+        
+        # Inicializar
+        self.logger.info(f"AgentTracker inicializado. Logs serão salvos em: {self.log_dir}")
+    
+    def set_prompt(self, prompt):
+        """Define o prompt utilizado para a execução"""
+        self.prompt = prompt
+    
+    async def callback(self, event_data):
+        """
+        Callback principal para processar eventos do agente.
+        Este método é chamado pelo agente durante a execução.
+        
+        Args:
+            event_data (dict): Dados do evento a ser processado
+        """
+        if not event_data:
+            return
+            
+        # Incrementar contador de eventos
+        self.total_events += 1
+        
+        # Processar o evento
+        await self.process_event(event_data)
+    
+    async def process_event(self, event_data):
+        """
+        Processa um evento do agente, categorizando-o e salvando nos logs.
+        
+        Args:
+            event_data (dict): Dados do evento a ser processado
+        """
+        # Adicionar timestamp se não existir
+        if "timestamp" not in event_data:
+            event_data["timestamp"] = datetime.now().isoformat()
+            
+        # Determinar tipo de evento
+        event_type = event_data.get("event_type") or event_data.get("type", "unknown")
+        
+        # Categorizar evento
+        categoria = EventCategorizador.categorizar_evento(event_type)
+        
+        # Atualizar contadores
+        if categoria == EventCategorizador.CATEGORIA_NAVEGACAO:
+            self.navigation_count += 1
+        elif categoria == EventCategorizador.CATEGORIA_INTERACAO:
+            self.interaction_count += 1
+        elif categoria == EventCategorizador.CATEGORIA_SCREENSHOT:
+            self.screenshot_count += 1
+        elif categoria == EventCategorizador.CATEGORIA_ERRO:
+            self.error_count += 1
+            
+        # Atualizar estatísticas por categoria
+        if categoria not in self.stats_por_categoria:
+            self.stats_por_categoria[categoria] = 0
+        self.stats_por_categoria[categoria] += 1
+        
+        # Processar passos de agente
+        if event_type in ["browser_use.agent.step", "agent.step"]:
+            self.steps_count += 1
+            
+            # Extrair pensamentos se presentes
+            for field in ["thought", "evaluation", "memory", "next_goal"]:
+                if field in event_data and event_data[field]:
+                    # Adicionar ao evento para facilitar visualização
+                    event_data[f"{field}_present"] = True
+        
+        # Processar screenshots se configurado
+        if self.include_screenshots and "screenshot" in event_data:
+            try:
+                screenshot_data = event_data["screenshot"]
+                # Se for uma string base64, salvar como arquivo
+                if isinstance(screenshot_data, str) and screenshot_data.startswith("data:image"):
+                    # Extrair o conteúdo base64
+                    content_type, base64_data = screenshot_data.split(",", 1)
+                    
+                    # Criar um nome de arquivo baseado no timestamp e contador
+                    ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                    screenshot_filename = f"screenshot_{ts}_{self.screenshot_count}.png"
+                    screenshot_path = os.path.join(self.log_dir, screenshot_filename)
+                    
+                    # Decodificar e salvar
+                    with open(screenshot_path, "wb") as f:
+                        f.write(base64.b64decode(base64_data))
+                    
+                    # Substituir o dado base64 pelo nome do arquivo para economizar espaço
+                    event_data["screenshot"] = screenshot_filename
+                    self.logger.debug(f"Screenshot salvo em: {screenshot_path}")
+            except Exception as e:
+                self.logger.error(f"Erro ao processar screenshot: {str(e)}")
+                # Manter o evento mesmo se falhar o processamento do screenshot
+        
+        # Adicionar categoria ao evento
+        event_data["categoria"] = categoria
+        
+        # Salvar o evento na lista
+        self.eventos.append({
+            "tipo": event_type,
+            "categoria": categoria,
+            "timestamp": event_data["timestamp"],
+            "dados": event_data
+        })
+        
+        # Salvar o log atualizado
+        self._save_log()
+    
+    def _save_log(self):
+        """Salva os eventos em um arquivo JSON"""
+        try:
+            with open(self.log_file, "w", encoding="utf-8") as f:
+                json.dump(self.eventos, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            self.logger.error(f"Erro ao salvar log: {str(e)}")
+    
+    def register_browser_use_callbacks(self, agent):
+        """
+        Registra callbacks para um agente browser-use.
+        
+        Args:
+            agent: Instância do agente browser-use
+            
+        Returns:
+            bool: True se os callbacks foram registrados com sucesso
+        """
+        try:
+            # Registrar interceptador de logs se ainda não tiver sido registrado
+            interceptor = BrowserUseLogInterceptor(self.callback)
+            interceptor.instalar()
+            self.log_interceptor = interceptor
+            
+            # Criar rastreador de browser-use se necessário
+            tracker = self.get_browser_use_tracker()
+            
+            # Registrar callback no agente
+            if hasattr(agent, 'register_callback'):
+                agent.register_callback(tracker.step_callback)
+                logger.info("Callback do AgentTracker registrado no agente browser-use")
+                return True
+            else:
+                logger.warning("Agente não tem método register_callback. Callback não registrado.")
+                # O interceptador de logs ainda capturará as informações
+                return True
+        except Exception as e:
+            logger.error(f"Erro ao registrar callbacks: {str(e)}")
+            logger.error(traceback.format_exc())
+            return False
+    
+    def get_browser_use_tracker(self):
+        """
+        Obtém ou cria um rastreador de browser-use associado a este tracker.
+        
+        Returns:
+            BrowserUseTracker: Instância do rastreador
+        """
+        if not hasattr(self, 'browser_use_tracker'):
+            self.browser_use_tracker = BrowserUseTracker(self)
+        return self.browser_use_tracker
+    
+    async def track_execution(self, agent, prompt, **kwargs):
+        """
+        Inicia o rastreamento da execução do agente
+        
+        Args:
+            agent: Instância do agente a ser rastreado
+            prompt: Prompt para execução do agente
+            **kwargs: Argumentos adicionais para o método execute_prompt_task
+            
+        Returns:
+            Resultado da execução do agente
+        """
+        self.set_prompt(prompt)
+        logger.info(f"Iniciando rastreamento do agente com prompt: '{prompt[:100]}...' (truncado)")
+        
+        try:
+            # Registrar evento de início
+            await self.process_event({
+                "type": "agent.start",
+                "prompt": prompt,
+                "timestamp": datetime.now().isoformat()
+            })
+            
+            # Instalar interceptador de logs do browser-use
+            self.log_interceptor = BrowserUseLogInterceptor(self.callback)
+            self.log_interceptor.instalar()
+            
+            # Tentar registrar callbacks no browser-use se disponível
+            # Isso é feito sem afetar o fluxo atual
+            try:
+                if hasattr(agent, 'z2b_agent') and agent.z2b_agent and hasattr(agent.z2b_agent, 'browser_agent'):
+                    browser_agent = agent.z2b_agent.browser_agent
+                    self.register_browser_use_callbacks(browser_agent)
+            except Exception as e:
+                logger.warning(f"Não foi possível registrar callbacks para o browser-use: {str(e)}")
+            
+            # Executar o agente com nosso callback
+            logger.info("Executando o agente com callback do tracker")
+            start_execution = time.time()
+            result = await agent.execute_prompt_task(prompt, callback=self.callback, **kwargs)
+            execution_time = time.time() - start_execution
+            
+            # Remover interceptador de logs
+            if hasattr(self, 'log_interceptor'):
+                self.log_interceptor.desinstalar()
+            
+            # Registrar evento de conclusão
+            await self.process_event({
+                "type": "agent.complete",
+                "result": result,
+                "execution_time_seconds": execution_time,
+                "summary": self.get_resumo_execucao(),
+                "timestamp": datetime.now().isoformat()
+            })
+            
+            # Salvar resumo em arquivo separado se auto_summarize estiver ativado
+            if self.auto_summarize:
+                resumo_file = os.path.join(self.log_dir, "execution_summary.json")
+                with open(resumo_file, "w", encoding="utf-8") as f:
+                    json.dump(self.get_resumo_execucao(), f, indent=2, ensure_ascii=False)
+                
+                # Salvar logs de pensamento também
+                self.save_thinking_logs()
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Erro durante o rastreamento do agente: {e}")
+            
+            # Remover interceptador de logs em caso de erro
+            if hasattr(self, 'log_interceptor'):
+                self.log_interceptor.desinstalar()
+            
+            # Registrar o erro
+            await self.process_event({
+                "type": "agent.error",
+                "error": str(e),
+                "traceback": traceback.format_exc(),
+                "timestamp": datetime.now().isoformat()
+            })
+            
+            # Relançar a exceção para tratamento externo
+            raise
+    
+    def get_resumo_execucao(self) -> Dict[str, Any]:
+        """
+        Gera um resumo da execução atual
+        
+        Returns:
+            Dict[str, Any]: Resumo da execução
+        """
+        duracao = (datetime.now() - self.start_time).total_seconds()
+        
+        return {
+            "prompt": self.prompt[:100] + "..." if self.prompt and len(self.prompt) > 100 else self.prompt,
+            "inicio": self.start_time.isoformat(),
+            "duracao_segundos": duracao,
+            "total_eventos": self.total_events,
+            "passos": self.steps_count,
+            "navegacoes": self.navigation_count,
+            "interacoes": self.interaction_count,
+            "screenshots": self.screenshot_count,
+            "erros": self.error_count,
+            "distribuicao_categorias": self.stats_por_categoria
+        }
+    
+    def get_thinking_logs(self) -> List[Dict[str, Any]]:
+        """
+        Extrai os logs de pensamento do agente para visualização do raciocínio.
+        
+        Returns:
+            List[Dict[str, Any]]: Lista de registros de pensamento do agente
+        """
+        thinking_logs = []
+        
+        for evento in self.eventos:
+            # Verificar se é um passo do agente que contém pensamentos
+            if evento["tipo"] == "browser_use.agent.step":
+                step_data = {
+                    "step": evento["dados"].get("step", 0),
+                    "timestamp": evento["timestamp"],
+                    "thought": None,
+                    "evaluation": None,
+                    "memory": None,
+                    "next_goal": None,
+                    "action": None
+                }
+                
+                # Extrair campos relevantes
+                for campo in ["thought", "evaluation", "memory", "next_goal"]:
+                    # Verificar no nível superior do evento (adicionados pelo process_event)
+                    if campo in evento and evento[campo]:
+                        step_data[campo] = evento[campo]
+                    # Verificar nos dados do evento
+                    elif campo in evento["dados"] and evento["dados"][campo]:
+                        step_data[campo] = evento["dados"][campo]
+                
+                # Extrair ação
+                if "action" in evento["dados"] and evento["dados"]["action"]:
+                    action = evento["dados"]["action"]
+                    if isinstance(action, dict):
+                        step_data["action"] = action
+                
+                # Adicionar à lista se tiver pelo menos um campo de pensamento
+                if any(step_data[campo] for campo in ["thought", "evaluation", "memory", "next_goal"]):
+                    thinking_logs.append(step_data)
+        
+        return thinking_logs
+    
+    def save_thinking_logs(self, filename=None):
+        """
+        Salva os logs de pensamento do agente em um arquivo separado para facilitar análise.
+        
+        Args:
+            filename: Nome do arquivo para salvar os logs (padrão: thinking_logs.json)
+        """
+        logs = self.get_thinking_logs()
+        
+        if not logs:
+            logger.warning("Nenhum log de pensamento encontrado para salvar")
+            return
+        
+        if not filename:
+            filename = os.path.join(self.log_dir, "thinking_logs.json")
+        
+        try:
+            with open(filename, "w", encoding="utf-8") as f:
+                json.dump(logs, f, indent=2, ensure_ascii=False)
+            
+            logger.info(f"Logs de pensamento salvos em: {filename}")
+        except Exception as e:
+            logger.error(f"Erro ao salvar logs de pensamento: {str(e)}")
+
+    def save_timeline(self, filepath):
+        """
+        Salva a timeline em um arquivo JSON.
+        
+        Args:
+            filepath (str): Caminho do arquivo onde a timeline será salva
+            
+        Returns:
+            str: Caminho do arquivo salvo
+        """
+        if hasattr(self, 'timeline_builder') and self.timeline_builder:
+            # Validação do filepath
+            if not filepath:
+                safe_filepath = os.path.join(self.log_dir or ".", "timeline.json")
+                logger.warning(f"Filepath inválido, usando padrão: {safe_filepath}")
+                filepath = safe_filepath
+                
+            # Garantir que o diretório existe
+            try:
+                os.makedirs(os.path.dirname(os.path.abspath(filepath)), exist_ok=True)
+            except Exception as e:
+                logger.error(f"Erro ao criar diretório para timeline: {e}")
+                # Tentar salvar no diretório atual como fallback
+                filepath = os.path.join(".", os.path.basename(filepath))
+                
+            return self.timeline_builder.save_timeline(filepath)
+        else:
+            logger.error("Não foi possível salvar a timeline: timeline_builder não disponível")
+            return None
+     
+    def get_timeline(self):
+        """
+        Retorna a timeline completa com validação de integridade.
+        
+        Returns:
+            dict: Dados completos da timeline
+        """
+        if hasattr(self, 'timeline_builder') and self.timeline_builder:
+            timeline_data = self.timeline_builder.get_timeline()
+            
+            # Validação e sanitização da timeline antes de retornar
+            # Garantir que campos obrigatórios existam
+            if "events" not in timeline_data:
+                timeline_data["events"] = []
+            if "total_steps" not in timeline_data:
+                timeline_data["total_steps"] = len([e for e in timeline_data.get("events", []) 
+                                                   if e.get("metadata", {}).get("step_number") is not None])
+            if "total_thoughts" not in timeline_data:
+                timeline_data["total_thoughts"] = len([e for e in timeline_data.get("events", [])
+                                                     if e.get("metadata", {}).get("thought_type") is not None])
+            
+            # Adicionar metadados de validação
+            timeline_data["validated"] = True
+            timeline_data["validation_timestamp"] = datetime.now().isoformat()
+            
+            return timeline_data
+        else:
+            logger.warning("Não foi possível obter a timeline: timeline_builder não disponível")
+            return {"events": [], "total_steps": 0, "total_thoughts": 0, "validated": False}
+
+    def get_unknown_messages(self):
+        """
+        Retorna a lista de mensagens não categorizadas capturadas durante o rastreamento.
+        
+        Returns:
+            List[Dict]: Lista de mensagens desconhecidas com seus timestamps
+        """
+        if hasattr(self, 'unknown_messages'):
+            return self.unknown_messages
+        else:
+            return []
+
+    def get_thoughts_for_step(self, step_number):
+        """
+        Retorna pensamentos para um passo específico.
+        
+        Args:
+            step_number: Número do passo
+            
+        Returns:
+            Lista de pensamentos ou None se não houver
+        """
+        return self.thoughts_by_step.get(step_number, [])
+
+    def _update_thought_stats(self, category):
+        """
+        Atualiza estatísticas de pensamentos.
+        
+        Args:
+            category (str): Categoria de pensamento
+        """
+        # Garantir que categoria existe nas estatísticas
+        if category not in self.thought_stats:
+            self.thought_stats[category] = 0
+            
+        # Incrementar contador
+        self.thought_stats[category] += 1
+            
+    async def _save_unknown_messages_periodically(self):
+        """
+        Salva periodicamente as mensagens desconhecidas no arquivo JSON.
+        """
+        try:
+            while True:
+                await asyncio.sleep(30)  # Salvar a cada 30 segundos
+                if hasattr(self, 'unknown_messages') and self.unknown_messages and hasattr(self, 'unknown_messages_file'):
+                    try:
+                        with open(self.unknown_messages_file, 'w', encoding='utf-8') as f:
+                            json.dump(self.unknown_messages, f, indent=2, ensure_ascii=False)
+                        logger.debug(f"Mensagens desconhecidas salvas em {self.unknown_messages_file}")
+                    except Exception as e:
+                        logger.error(f"Erro ao salvar mensagens desconhecidas: {e}")
+        except asyncio.CancelledError:
+            # Tarefa cancelada, salvar uma última vez
+            if hasattr(self, 'unknown_messages') and self.unknown_messages and hasattr(self, 'unknown_messages_file'):
+                try:
+                    with open(self.unknown_messages_file, 'w', encoding='utf-8') as f:
+                        json.dump(self.unknown_messages, f, indent=2, ensure_ascii=False)
+                    logger.debug(f"Mensagens desconhecidas salvas em {self.unknown_messages_file} (final)")
+                except Exception as e:
+                    logger.error(f"Erro ao salvar mensagens desconhecidas (final): {e}")
+        except Exception as e:
+            logger.error(f"Erro em _save_unknown_messages_periodically: {e}")
+    
+    def get_resumo_execucao(self) -> Dict[str, Any]:
+        """
+        Gera um resumo da execução atual
+        
+        Returns:
+            Dict[str, Any]: Resumo da execução
+        """
+        duracao = (datetime.now() - self.start_time).total_seconds()
+        
+        return {
+            "prompt": self.prompt[:100] + "..." if self.prompt and len(self.prompt) > 100 else self.prompt,
+            "inicio": self.start_time.isoformat(),
+            "duracao_segundos": duracao,
+            "total_eventos": self.total_events,
+            "passos": self.steps_count,
+            "navegacoes": self.navigation_count,
+            "interacoes": self.interaction_count,
+            "screenshots": self.screenshot_count,
+            "erros": self.error_count,
+            "distribuicao_categorias": self.stats_por_categoria
+        }
+
+    def _process_llm_data(self, pattern_name, match, message):
+        """
+        Processa dados relacionados ao LLM capturados nos logs.
+        
+        Args:
+            pattern_name (str): Nome do padrão que identificou os dados de LLM
+            match (re.Match): Objeto match com os grupos capturados
+            message (str): Mensagem completa do log
+        """
+        try:
+            # Determinar o tipo de evento LLM
+            event_type = pattern_name
+            
+            # Extrair dados com base no tipo de padrão
+            if pattern_name == "llm_request" or pattern_name == "llm_request_alt":
+                # Capturar dados de requisição
+                if pattern_name == "llm_request":
+                    # Formato: "LLM Request: model=XXX, prompt=YYY, tokens=ZZZ"
+                    model = match.group(1).strip()
+                    prompt_summary = match.group(2).strip()
+                    prompt_tokens = int(match.group(3))
+                else:
+                    # Formato alternativo: "Sending request to XXX with YYY tokens"
+                    model = match.group(1).strip()
+                    prompt_tokens = int(match.group(2))
+                    prompt_summary = "N/A"
+                
+                # Registrar no tracking atual
+                self.llm_tracking["current_model"] = model
+                self.llm_tracking["current_prompt_tokens"] = prompt_tokens
+                self.llm_tracking["current_step"] = self.current_step
+                
+                # Criar evento
+                event_data = {
+                    "model": model,
+                    "prompt": prompt_summary[:100] + "..." if len(prompt_summary) > 100 else prompt_summary,
+                    "prompt_tokens": prompt_tokens,
+                    "timestamp": datetime.now().isoformat()
+                }
+                
+                # Registrar na timeline se disponível
+                if hasattr(self, 'timeline_builder') and self.current_step:
+                    self.timeline_builder.add_llm_event(
+                        step_number=self.current_step or 0,
+                        event_type="llm_request",
+                        data=event_data
+                    )
+                    
+                # Atualizar estatísticas
+                self.llm_stats["total_calls"] += 1
+                self.llm_stats["total_tokens"] += prompt_tokens
+                
+                # Registrar no modelo específico
+                if model not in self.llm_stats["models"]:
+                    self.llm_stats["models"][model] = {
+                        "calls": 0,
+                        "total_prompt_tokens": 0,
+                        "total_completion_tokens": 0,
+                        "total_cost": 0.0
+                    }
+                    
+                self.llm_stats["models"][model]["calls"] += 1
+                self.llm_stats["models"][model]["total_prompt_tokens"] += prompt_tokens
+                
+            elif pattern_name == "llm_response" or pattern_name == "llm_response_alt":
+                # Capturar dados de resposta
+                if pattern_name == "llm_response":
+                    # Formato: "LLM Response: model=XXX, response=YYY, tokens=ZZZ"
+                    model = match.group(1).strip()
+                    response_summary = match.group(2).strip()
+                    completion_tokens = int(match.group(3))
+                else:
+                    # Formato alternativo: "Received response from XXX with YYY tokens"
+                    model = match.group(1).strip()
+                    completion_tokens = int(match.group(2))
+                    response_summary = "N/A"
+                
+                # Registrar no tracking atual
+                self.llm_tracking["current_completion_tokens"] = completion_tokens
+                
+                # Criar evento
+                event_data = {
+                    "model": model,
+                    "response": response_summary[:100] + "..." if len(response_summary) > 100 else response_summary,
+                    "completion_tokens": completion_tokens,
+                    "timestamp": datetime.now().isoformat()
+                }
+                
+                # Registrar na timeline se disponível
+                if hasattr(self, 'timeline_builder'):
+                    self.timeline_builder.add_llm_event(
+                        step_number=self.current_step or self.llm_tracking.get("current_step", 0),
+                        event_type="llm_response",
+                        data=event_data
+                    )
+                    
+                # Atualizar estatísticas
+                self.llm_stats["total_tokens"] += completion_tokens
+                
+                # Registrar no modelo específico
+                if model not in self.llm_stats["models"]:
+                    self.llm_stats["models"][model] = {
+                        "calls": 0,
+                        "total_prompt_tokens": 0,
+                        "total_completion_tokens": 0,
+                        "total_cost": 0.0
+                    }
+                    
+                self.llm_stats["models"][model]["total_completion_tokens"] += completion_tokens
+                
+            elif pattern_name == "llm_cost" or pattern_name == "llm_cost_alt":
+                # Capturar dados de custo
+                cost = float(match.group(1))
+                
+                # Registrar no tracking atual
+                self.llm_tracking["current_cost"] = cost
+                
+                # Criar evento
+                event_data = {
+                    "cost": cost,
+                    "model": self.llm_tracking.get("current_model", "unknown"),
+                    "timestamp": datetime.now().isoformat()
+                }
+                
+                # Registrar na timeline se disponível
+                if hasattr(self, 'timeline_builder'):
+                    self.timeline_builder.add_llm_event(
+                        step_number=self.current_step or self.llm_tracking.get("current_step", 0),
+                        event_type="llm_cost",
+                        data=event_data
+                    )
+                    
+                # Atualizar estatísticas
+                self.llm_stats["estimated_cost"] += cost
+                
+                # Registrar no modelo específico se disponível
+                model = self.llm_tracking.get("current_model")
+                if model and model in self.llm_stats["models"]:
+                    self.llm_stats["models"][model]["total_cost"] += cost
+                
+            # Adicionar ao passo atual se existir
+            if self.current_step:
+                # Encontrar o passo na timeline
+                for step in self.timeline:
+                    if step.get("step_number") == self.current_step:
+                        # Garantir que a lista de eventos LLM existe
+                        if "llm_events" not in step:
+                            step["llm_events"] = []
+                            
+                        # Adicionar evento
+                        step["llm_events"].append({
+                            "type": event_type,
+                            "timestamp": datetime.now().isoformat(),
+                            "data": match.groups()
+                        })
+                        break
+            
+            logger.debug(f"Dados de LLM processados: {pattern_name}")
+            
+        except Exception as e:
+            logger.error(f"Erro ao processar dados de LLM ({pattern_name}): {e}")
+            
+    async def finish_tracking(self):
+        """
+        Finaliza o processo de rastreamento, salvando dados pendentes e limpando recursos.
+        
+        Este método deve ser chamado antes de desinstalar o interceptador para garantir que
+        todos os dados sejam salvos adequadamente.
+        
+        Returns:
+            Dict[str, Any]: Resumo dos dados capturados durante o tracking
+        """
+        if not self.tracking_enabled:
+            logger.warning("O tracking já estava desativado.")
+            return {}
+            
+        logger.info("Finalizando tracking de logs do browser-use...")
+        
+        try:
+            # Salvar mensagens desconhecidas uma última vez
+            if hasattr(self, 'unknown_messages') and self.unknown_messages and hasattr(self, 'unknown_messages_file'):
+                try:
+                    with open(self.unknown_messages_file, 'w', encoding='utf-8') as f:
+                        json.dump(self.unknown_messages, f, indent=2, ensure_ascii=False)
+                    logger.debug(f"Mensagens desconhecidas salvas em {self.unknown_messages_file} (final)")
+                except Exception as e:
+                    logger.error(f"Erro ao salvar mensagens desconhecidas (final): {e}")
+            
+            # Cancelar tarefa de salvamento periódico
+            if hasattr(self, '_save_unknown_messages_task'):
+                self._save_unknown_messages_task.cancel()
+                try:
+                    # Aguardar a tarefa ser cancelada
+                    await asyncio.wait_for(asyncio.shield(self._save_unknown_messages_task), timeout=2.0)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass  # Esperado quando a tarefa é cancelada
+            
+            # Finalizar timeline
+            if hasattr(self, 'timeline_builder'):
+                self.timeline_builder.stop_timer()
+                
+                # Registrar evento de encerramento na timeline
+                self.timeline_builder.add_event(
+                    title="Interceptador Desativado",
+                    description="Fim do tracking de logs do browser-use",
+                    icon="⏹️",
+                    timestamp=datetime.now().isoformat()
+                )
+                
+                # Salvar timeline se temos diretório de log
+                if self.log_dir:
+                    timeline_file = os.path.join(self.log_dir, "timeline.json")
+                    try:
+                        with open(timeline_file, 'w', encoding='utf-8') as f:
+                            json.dump({
+                                "title": self.timeline_builder.title,
+                                "start_time": self.start_time.isoformat(),
+                                "end_time": datetime.now().isoformat(),
+                                "events": self.timeline_builder.events,
+                                "total_steps": len([e for e in self.timeline_builder.events if "step_number" in e.get("metadata", {})]),
+                                "total_thoughts": self.total_thoughts_processed
+                            }, f, indent=2, ensure_ascii=False)
+                        logger.info(f"Timeline salva em {timeline_file}")
+                    except Exception as e:
+                        logger.error(f"Erro ao salvar timeline: {e}")
+            
+            # Calcular duração do tracking
+            duration = (datetime.now() - self.start_time).total_seconds()
+            
+            # Marcar tracking como desativado
+            self.tracking_enabled = False
+            
+            # Gerar resumo dos dados capturados
+            summary = {
+                "duration_seconds": duration,
+                "total_thoughts": self.total_thoughts_processed,
+                "thought_stats": self.thought_stats,
+                "total_steps": len(self.timeline),
+                "llm_stats": self.llm_stats,
+                "unknown_messages_count": len(self.unknown_messages) if hasattr(self, 'unknown_messages') else 0
+            }
+            
+            # Salvar resumo se temos diretório de log
+            if self.log_dir:
+                summary_file = os.path.join(self.log_dir, "tracking_summary.json")
+                try:
+                    with open(summary_file, 'w', encoding='utf-8') as f:
+                        json.dump(summary, f, indent=2, ensure_ascii=False)
+                    logger.info(f"Resumo do tracking salvo em {summary_file}")
+                except Exception as e:
+                    logger.error(f"Erro ao salvar resumo: {e}")
+            
+            # Salvar também os pensamentos capturados
+            if self.log_dir:
+                thoughts_file = os.path.join(self.log_dir, "thinking_logs.json")
+                try:
+                    # Extrair pensamentos de todos os passos
+                    all_thoughts = []
+                    for step in self.timeline:
+                        step_thoughts = []
+                        for thought in step.get("thoughts", []):
+                            step_thoughts.append({
+                                "step": step.get("step_number"),
+                                "type": thought.get("type"),
+                                "content": thought.get("content"),
+                                "timestamp": thought.get("timestamp")
+                            })
+                        all_thoughts.extend(step_thoughts)
+                    
+                    with open(thoughts_file, 'w', encoding='utf-8') as f:
+                        json.dump(all_thoughts, f, indent=2, ensure_ascii=False)
+                    logger.info(f"Pensamentos salvos em {thoughts_file}")
+                except Exception as e:
+                    logger.error(f"Erro ao salvar pensamentos: {e}")
+            
+            logger.info(f"Tracking finalizado após {duration:.1f} segundos")
+            logger.info(f"Total de pensamentos: {self.total_thoughts_processed}")
+            logger.info(f"Total de passos: {len(self.timeline)}")
+            
+            return summary
+            
+        except Exception as e:
+            logger.error(f"Erro ao finalizar tracking: {e}")
+            logger.error(traceback.format_exc())
+            self.tracking_enabled = False
+            return {
+                "error": str(e),
+                "total_thoughts": self.total_thoughts_processed,
+                "total_steps": len(self.timeline)
+            }
+
+    def desinstalar(self):
+        """
+        Remove o interceptador do sistema de logging e limpa recursos.
+        
+        Este método deve ser chamado para encerrar o interceptador após o uso.
+        Recomenda-se chamar finish_tracking() antes deste método para garantir
+        que todos os dados sejam salvos corretamente.
+        
+        Returns:
+            bool: True se o interceptador foi desinstalado com sucesso
+        """
+        try:
+            # Desativar tracking
+            self.tracking_enabled = False
+            
+            # Registrar evento de encerramento na timeline se disponível
+            if hasattr(self, 'timeline_builder'):
+                try:
+                    self.timeline_builder.add_event(
+                        title="Interceptador Desinstalado",
+                        description="Interceptador de logs removido do sistema",
+                        icon="🛑",
+                        timestamp=datetime.now().isoformat()
+                    )
+                except Exception as e:
+                    logger.error(f"Erro ao registrar evento de desinstalação: {e}")
+            
+            # Remover o handler do logger raiz
+            root_logger = logging.getLogger()
+            if self in root_logger.handlers:
+                root_logger.removeHandler(self)
+                
+            # Cancelar tarefas pendentes
+            for task in self._pending_tasks:
+                if not task.done():
+                    task.cancel()
+            
+            # Cancelar a tarefa de salvamento periódico se estiver ativa
+            if hasattr(self, '_save_unknown_messages_task') and self._save_unknown_messages_task and not self._save_unknown_messages_task.done():
+                try:
+                    self._save_unknown_messages_task.cancel()
+                except Exception as e:
+                    logger.error(f"Erro ao cancelar tarefa de salvamento: {e}")
+            
+            logger.info("Interceptador de logs desinstalado com sucesso")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Erro ao desinstalar interceptador: {e}")
+            logger.error(traceback.format_exc())
+            return False
+    
+    def get_thoughts_summary(self):
+        """
+        Gera um resumo estatístico dos pensamentos capturados.
+        
+        Returns:
+            Dict[str, Any]: Resumo estatístico dos pensamentos
+        """
+        # Copiar estatísticas atuais
+        stats = {
+            "total_thoughts": sum(self.thought_stats.values()),
+            "categories": {k: v for k, v in self.thought_stats.items() if k != "unknown"},
+            "unknown": self.thought_stats.get("unknown", 0)
+        }
+        
+        # Se temos timeline, adicionar pensamentos por passo
+        if self.timeline:
+            thoughts_by_step = {}
+            for step in self.timeline:
+                step_number = step.get("step_number")
+                step_thoughts = step.get("thoughts", [])
+                thoughts_by_step[step_number] = len(step_thoughts)
+            
+            stats["step_count"] = len(self.timeline)
+            stats["thoughts_by_step"] = thoughts_by_step
+            
+            # Adicionar estatísticas de ações se disponíveis
+            action_stats = self._get_action_stats()
+            if action_stats:
+                stats["actions"] = action_stats
+        
+        # Adicionar estatísticas sobre o processamento
+        if hasattr(self, 'total_thoughts_detected') and hasattr(self, 'total_thoughts_processed'):
+            stats["processing_stats"] = {
+                "detected": self.total_thoughts_detected,
+                "processed": self.total_thoughts_processed,
+                "processing_rate": round((self.total_thoughts_processed / self.total_thoughts_detected) * 100, 2) if self.total_thoughts_detected > 0 else 0
+            }
+        
+        return stats
+    
+    def _get_action_stats(self):
+        """
+        Gera estatísticas sobre as ações detectadas.
+        
+        Returns:
+            Dict[str, Any]: Estatísticas de ações por tipo
+        """
+        # Inicializar contadores
+        action_counts = {}
+        total_actions = 0
+        
+        # Contar ações por tipo em cada passo
+        for step in self.timeline:
+            actions = step.get("actions", [])
+            for action in actions:
+                action_type = action.get("type", "unknown")
+                if action_type not in action_counts:
+                    action_counts[action_type] = 0
+                action_counts[action_type] += 1
+                total_actions += 1
+        
+        # Se não há ações, retornar None
+        if not total_actions:
+            return None
+            
+        # Calcular distribuição percentual
+        distribution = {}
+        for action_type, count in action_counts.items():
+            distribution[action_type] = round((count / total_actions) * 100, 2)
+        
+        # Agrupar ações por passo
+        actions_by_step = {}
+        for step in self.timeline:
+            step_number = step.get("step_number")
+            actions = step.get("actions", [])
+            if actions:
+                actions_by_step[step_number] = len(actions)
+        
+        return {
+            "total_actions": total_actions,
+            "action_counts": action_counts,
+            "distribution": distribution,
+            "actions_by_step": actions_by_step,
+            "actions_per_step": round(total_actions / len(self.timeline), 2) if self.timeline else 0
+        }
+    
+    def _update_thought_stats(self, thought_type):
+        """
+        Atualiza as estatísticas de pensamentos por categoria.
+        
+        Args:
+            thought_type (str): O tipo normalizado de pensamento
+        """
+        # Garantir que categoria existe nas estatísticas
+        if thought_type not in self.thought_stats:
+            self.thought_stats[thought_type] = 0
+            
+        # Incrementar contador
+        self.thought_stats[thought_type] += 1
+    
+    def _process_action(self, pattern_name, content, message, explicit_type=None):
+        """
+        Processa ações detectadas nas mensagens de log.
+        
+        Args:
+            pattern_name (str): Nome do padrão que identificou a ação
+            content (str): Conteúdo da ação (possivelmente em formato JSON)
+            message (str): Mensagem completa do log
+            explicit_type (str, optional): Tipo explícito da ação, se capturado no pattern
+        """
+        try:
+            # Determinar o tipo de ação com base no pattern_name ou explicit_type
+            if explicit_type:
+                # Usar o tipo explícito fornecido pelo padrão action_json_with_type
+                action_type = explicit_type
+                # Tentar parsear como JSON
+                try:
+                    action_data = json.loads(content)
+                except json.JSONDecodeError:
+                    action_data = {"text": content}
+                    if self.debug_mode:
+                        logger.warning(f"Falha ao parsear ação como JSON apesar do tipo explícito '{explicit_type}': {content}")
+            elif pattern_name == "action" or pattern_name == "action_result":
+                # Ação em formato texto simples
+                action_type = "generic"
+                action_data = {"text": content}
+            else:
+                # Tentar parsear como JSON
+                try:
+                    action_data = json.loads(content)
+                    
+                    # Determinar o tipo de ação baseado no pattern ou no conteúdo
+                    if pattern_name == "navigation_action":
+                        action_type = "navigation"
+                    elif pattern_name == "click_action":
+                        action_type = "click"
+                    elif pattern_name == "extraction_action":
+                        action_type = "extraction"
+                    elif pattern_name == "form_action":
+                        action_type = "form"
+                    elif "type" in action_data:
+                        # Usar o tipo definido no próprio JSON
+                        action_type = action_data["type"]
+                    else:
+                        # Inferir o tipo baseado nas chaves presentes
+                        if "url" in action_data:
+                            action_type = "navigation"
+                        elif "selector" in action_data or "element" in action_data:
+                            action_type = "click"
+                        elif "extract" in action_data or "data" in action_data:
+                            action_type = "extraction"
+                        elif "form" in action_data or "inputs" in action_data:
+                            action_type = "form"
+                        else:
+                            action_type = "unknown"
+                except json.JSONDecodeError:
+                    # Não é JSON válido, tratar como texto
+                    action_type = "text"
+                    action_data = {"text": content}
+                    if self.debug_mode:
+                        logger.warning(f"Falha ao parsear ação como JSON: {content}")
+                        
+            # Registrar a ação no passo atual
+            if self.current_step:
+                # Encontrar o passo atual na timeline
+                for step in self.timeline:
+                    if step.get("step_number") == self.current_step:
+                        # Garantir que a lista de ações existe
+                        if "actions" not in step:
+                            step["actions"] = []
+                        
+                        # Adicionar ação
+                        step["actions"].append({
+                            "type": action_type,
+                            "data": action_data,
+                            "timestamp": datetime.now().isoformat(),
+                            "raw_message": message
+                        })
+                        
+                        # Registrar na timeline, se disponível
+                        if hasattr(self, 'timeline_builder'):
+                            # Determinar ícone com base no tipo de ação
+                            icon = "🔍"  # Ícone padrão para ação genérica
+                            if action_type == "navigation":
+                                icon = "🌐"
+                            elif action_type == "click":
+                                icon = "👆"
+                            elif action_type == "extraction":
+                                icon = "📊"
+                            elif action_type == "form":
+                                icon = "📝"
+                            
+                            # Preparar descrição compacta da ação
+                            description = self._create_action_description(action_type, action_data)
+                            
+                            # Adicionar à timeline
+                            self.timeline_builder.add_event(
+                                title=f"Ação: {action_type.capitalize()}",
+                                description=description,
+                                icon=icon,
+                                metadata={
+                                    "step_number": self.current_step,
+                                    "action_type": action_type,
+                                    "action_data": action_data
+                                }
+                            )
+                        
+                        logger.debug(f"Ação do tipo {action_type} adicionada ao passo {self.current_step}")
+                        break
+            
+            # Se não houver passo atual, registrar como desconhecido para análise posterior
+            else:
+                if hasattr(self, 'unknown_messages'):
+                    self.unknown_messages.append({
+                        "message": message,
+                        "action_content": content,
+                        "action_type": action_type,
+                        "timestamp": datetime.now().isoformat(),
+                        "reason": "Nenhum passo atual definido para associar a ação"
+                    })
+                logger.warning(f"Ação detectada mas nenhum passo atual: {action_type}")
+                
+        except Exception as e:
+            logger.error(f"Erro ao processar ação ({pattern_name}): {e}")
+            if hasattr(self, 'unknown_messages'):
+                self.unknown_messages.append({
+                    "message": message,
+                    "action_content": content,
+                    "timestamp": datetime.now().isoformat(),
+                    "error": str(e),
+                    "reason": "Erro ao processar ação"
+                })
+    
+    def _create_action_description(self, action_type, action_data):
+        """
+        Cria uma descrição legível para uma ação com base em seu tipo e dados.
+        
+        Args:
+            action_type (str): Tipo da ação
+            action_data (dict): Dados da ação
+            
+        Returns:
+            str: Descrição formatada da ação
+        """
+        if action_type == "navigation":
+            if "url" in action_data:
+                return f"Navegação para: {action_data['url']}"
+            else:
+                return "Navegação (URL não especificada)"
+                
+        elif action_type == "click":
+            if "selector" in action_data:
+                return f"Clique em: {action_data['selector']}"
+            elif "element" in action_data:
+                return f"Clique em: {action_data['element']}"
+            else:
+                return "Clique (elemento não especificado)"
+                
+        elif action_type == "extraction":
+            if "selector" in action_data:
+                return f"Extração de dados do elemento: {action_data['selector']}"
+            elif "data" in action_data:
+                data_keys = list(action_data["data"].keys()) if isinstance(action_data["data"], dict) else []
+                if data_keys:
+                    return f"Extração de dados: {', '.join(data_keys[:3])}" + ("..." if len(data_keys) > 3 else "")
+                else:
+                    return "Extração de dados"
+            else:
+                return "Extração de dados"
+                
+        elif action_type == "form":
+            if "form" in action_data and "selector" in action_data["form"]:
+                return f"Preenchimento de formulário: {action_data['form']['selector']}"
+            elif "inputs" in action_data:
+                input_count = len(action_data["inputs"]) if isinstance(action_data["inputs"], list) else 0
+                return f"Preenchimento de formulário com {input_count} campo(s)"
+            else:
+                return "Preenchimento de formulário"
+                
+        elif action_type == "text" or action_type == "generic":
+            if "text" in action_data:
+                text = action_data["text"]
+                # Limitar o tamanho do texto para a descrição
+                if len(text) > 50:
+                    return text[:47] + "..."
+                else:
+                    return text
+            else:
+                return "Ação genérica"
+                
+        else:
+            # Para outros tipos de ações, mostrar as primeiras chaves disponíveis
+            if isinstance(action_data, dict):
+                keys = list(action_data.keys())
+                if keys:
+                    key_values = []
+                    for key in keys[:3]:  # Mostrar no máximo 3 chaves
+                        value = action_data[key]
+                        if isinstance(value, (str, int, float, bool)):
+                            # Limitar o tamanho do valor
+                            str_value = str(value)
+                            if len(str_value) > 20:
+                                str_value = str_value[:17] + "..."
+                            key_values.append(f"{key}: {str_value}")
+                    
+                    return f"Ação {action_type}: {', '.join(key_values)}" + ("..." if len(keys) > 3 else "")
+            
+            return f"Ação {action_type}"
+
+    def add_event_to_timeline(self, title, description=None, icon=None, timestamp=None, metadata=None, validate=True):
+        """
+        Adiciona um evento à timeline com validação de dados.
+        
+        Args:
+            title (str): Título do evento
+            description (str, optional): Descrição detalhada do evento
+            icon (str, optional): Ícone a ser exibido (emoji ou código HTML)
+            timestamp (str, optional): Timestamp ISO do evento (usa o atual se não fornecido)
+            metadata (dict, optional): Metadados adicionais do evento
+            validate (bool): Se True, valida e sanitiza os dados antes de adicionar
+        """
+        if not hasattr(self, 'timeline_builder'):
+            logger.warning("Timeline builder não disponível para adicionar evento")
+            return
+        
+        if validate:
+            # Validar e sanitizar os dados
+            if not title or not isinstance(title, str):
+                title = "Evento sem título" if not title else str(title)
+                
+            if description and not isinstance(description, str):
+                description = str(description)
+                
+            if metadata and not isinstance(metadata, dict):
+                logger.warning(f"Metadados inválidos, tipo: {type(metadata)}")
+                metadata = {"original": str(metadata)}
+                
+            # Sanitizar metadados para garantir serializabilidade JSON
+            if metadata:
+                safe_metadata = {}
+                for k, v in metadata.items():
+                    try:
+                        # Testar serialização
+                        json.dumps({k: v})
+                        safe_metadata[k] = v
+                    except (TypeError, OverflowError):
+                        # Converter para string se não for serializável
+                        safe_metadata[k] = str(v)
+                metadata = safe_metadata
+        
+        # Adicionar à timeline
+        self.timeline_builder.add_event(
+            title=title,
+            description=description,
+            icon=icon,
+            timestamp=timestamp,
+            metadata=metadata
+        )
+        
+        logger.debug(f"Evento adicionado à timeline: {title}")
 
 async def track_agent_execution(agent, prompt, **kwargs):
     """
