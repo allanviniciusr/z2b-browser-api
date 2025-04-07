@@ -782,6 +782,13 @@ class BrowserUseLogInterceptor(logging.Handler):
         # Padrões para ações
         "action": r"Action: (.*)",
         "action_result": r"Result: (.*)",
+        "action_json": r"Action: (\{.*?\})",
+        "action_json_extended": r"Action JSON: (\{.*?\})",
+        "action_json_with_type": r"Action \(([a-zA-Z_]+)\): (\{.*?\})",
+        "navigation_action": r"Navigation action: (\{.*?\})",
+        "click_action": r"Click action: (\{.*?\})",
+        "extraction_action": r"Extraction action: (\{.*?\})",
+        "form_action": r"Form action: (\{.*?\})",
         
         # Padrões para informações de LLM
         "llm_request": r"LLM Request: model=(.*), prompt=(.*), tokens=(\d+)",
@@ -1016,6 +1023,17 @@ class BrowserUseLogInterceptor(logging.Handler):
                         # Processar pensamento
                         content = match.group(2) if len(match.groups()) > 1 else match.group(1)
                         self._add_thought_to_step("thought", content, message)
+                    elif pattern_name.startswith("action") or pattern_name.endswith("action"):
+                        # Processar ação
+                        if pattern_name == "action_json_with_type":
+                            # Este padrão captura dois grupos: o tipo da ação e o JSON
+                            action_type = match.group(1)
+                            content = match.group(2)
+                            self._process_action(pattern_name, content, message, action_type)
+                        else:
+                            # Padrões normais capturam apenas o conteúdo
+                            content = match.group(1)
+                            self._process_action(pattern_name, content, message)
                     elif pattern_name.startswith("llm"):
                         # Processar dados de LLM
                         self._process_llm_data(pattern_name, match, message)
@@ -1951,81 +1969,89 @@ class BrowserUseLogInterceptor(logging.Handler):
     
     def get_thoughts_summary(self):
         """
-        Gera um resumo estatístico dos pensamentos capturados durante o rastreamento.
-        
-        Este método analisa todos os pensamentos capturados e gera estatísticas
-        detalhadas sobre sua distribuição por categoria e por passo.
+        Gera um resumo estatístico dos pensamentos capturados.
         
         Returns:
-            Dict[str, Any]: Resumo dos pensamentos capturados com estatísticas
+            Dict[str, Any]: Resumo estatístico dos pensamentos
         """
-        # Inicializar contadores por categoria
-        thought_counts = {
-            "evaluation": 0,
-            "memory": 0,
-            "next_goal": 0,
-            "thought": 0,
-            "unknown": 0
+        # Copiar estatísticas atuais
+        stats = {
+            "total_thoughts": sum(self.thought_stats.values()),
+            "categories": {k: v for k, v in self.thought_stats.items() if k != "unknown"},
+            "unknown": self.thought_stats.get("unknown", 0)
         }
         
-        # Inicializar estruturas para análise
-        thoughts_by_step = {}
-        steps_with_thoughts = set()
-        total_thoughts = 0
-        
-        # Analisar pensamentos de cada passo
-        for step in self.timeline:
-            step_number = step.get("step_number", 0)
-            step_thoughts = {}
+        # Se temos timeline, adicionar pensamentos por passo
+        if self.timeline:
+            thoughts_by_step = {}
+            for step in self.timeline:
+                step_number = step.get("step_number")
+                step_thoughts = step.get("thoughts", [])
+                thoughts_by_step[step_number] = len(step_thoughts)
             
-            # Contagem de pensamentos por categoria neste passo
-            if "thoughts_by_category" in step:
-                for category, thoughts_list in step["thoughts_by_category"].items():
-                    count = len(thoughts_list)
-                    if count > 0:
-                        # Incrementar contagem desta categoria
-                        if category in thought_counts:
-                            thought_counts[category] += count
-                        else:
-                            thought_counts["unknown"] += count
-                            
-                        # Registrar para este passo
-                        step_thoughts[category] = count
-                        total_thoughts += count
-                        steps_with_thoughts.add(step_number)
+            stats["step_count"] = len(self.timeline)
+            stats["thoughts_by_step"] = thoughts_by_step
             
-            # Armazenar contagens deste passo
-            if step_thoughts:
-                thoughts_by_step[step_number] = step_thoughts
-        
-        # Calcular total geral
-        total = sum(thought_counts.values())
-        
-        # Calcular distribuição percentual por categoria
-        distribution = {}
-        if total > 0:
-            for category, count in thought_counts.items():
-                distribution[category] = round((count / total) * 100, 2)
-        
-        # Construir resumo completo
-        summary = {
-            "total_thoughts": total,
-            "thought_counts": thought_counts,
-            "steps_with_thoughts": len(steps_with_thoughts),
-            "thoughts_by_step": thoughts_by_step,
-            "distribution_percent": distribution,
-            "average_thoughts_per_step": round(total / len(steps_with_thoughts), 2) if steps_with_thoughts else 0
-        }
+            # Adicionar estatísticas de ações se disponíveis
+            action_stats = self._get_action_stats()
+            if action_stats:
+                stats["actions"] = action_stats
         
         # Adicionar estatísticas sobre o processamento
         if hasattr(self, 'total_thoughts_detected') and hasattr(self, 'total_thoughts_processed'):
-            summary["processing_stats"] = {
+            stats["processing_stats"] = {
                 "detected": self.total_thoughts_detected,
                 "processed": self.total_thoughts_processed,
                 "processing_rate": round((self.total_thoughts_processed / self.total_thoughts_detected) * 100, 2) if self.total_thoughts_detected > 0 else 0
             }
         
-        return summary
+        return stats
+    
+    def _get_action_stats(self):
+        """
+        Gera estatísticas sobre as ações detectadas.
+        
+        Returns:
+            Dict[str, Any]: Estatísticas de ações por tipo
+        """
+        # Inicializar contadores
+        action_counts = {}
+        total_actions = 0
+        
+        # Contar ações por tipo em cada passo
+        for step in self.timeline:
+            actions = step.get("actions", [])
+            for action in actions:
+                action_type = action.get("type", "unknown")
+                if action_type not in action_counts:
+                    action_counts[action_type] = 0
+                action_counts[action_type] += 1
+                total_actions += 1
+        
+        # Se não há ações, retornar None
+        if not total_actions:
+            return None
+            
+        # Calcular distribuição percentual
+        distribution = {}
+        for action_type, count in action_counts.items():
+            distribution[action_type] = round((count / total_actions) * 100, 2)
+        
+        # Agrupar ações por passo
+        actions_by_step = {}
+        for step in self.timeline:
+            step_number = step.get("step_number")
+            actions = step.get("actions", [])
+            if actions:
+                actions_by_step[step_number] = len(actions)
+        
+        return {
+            "total_actions": total_actions,
+            "action_counts": action_counts,
+            "distribution": distribution,
+            "actions_by_step": actions_by_step,
+            "actions_per_step": round(total_actions / len(self.timeline), 2) if self.timeline else 0
+        }
     
     def _update_thought_stats(self, thought_type):
         """
@@ -2040,6 +2066,215 @@ class BrowserUseLogInterceptor(logging.Handler):
             
         # Incrementar contador
         self.thought_stats[thought_type] += 1
+    
+    def _process_action(self, pattern_name, content, message, explicit_type=None):
+        """
+        Processa ações detectadas nas mensagens de log.
+        
+        Args:
+            pattern_name (str): Nome do padrão que identificou a ação
+            content (str): Conteúdo da ação (possivelmente em formato JSON)
+            message (str): Mensagem completa do log
+            explicit_type (str, optional): Tipo explícito da ação, se capturado no pattern
+        """
+        try:
+            # Determinar o tipo de ação com base no pattern_name ou explicit_type
+            if explicit_type:
+                # Usar o tipo explícito fornecido pelo padrão action_json_with_type
+                action_type = explicit_type
+                # Tentar parsear como JSON
+                try:
+                    action_data = json.loads(content)
+                except json.JSONDecodeError:
+                    action_data = {"text": content}
+                    if self.debug_mode:
+                        logger.warning(f"Falha ao parsear ação como JSON apesar do tipo explícito '{explicit_type}': {content}")
+            elif pattern_name == "action" or pattern_name == "action_result":
+                # Ação em formato texto simples
+                action_type = "generic"
+                action_data = {"text": content}
+            else:
+                # Tentar parsear como JSON
+                try:
+                    action_data = json.loads(content)
+                    
+                    # Determinar o tipo de ação baseado no pattern ou no conteúdo
+                    if pattern_name == "navigation_action":
+                        action_type = "navigation"
+                    elif pattern_name == "click_action":
+                        action_type = "click"
+                    elif pattern_name == "extraction_action":
+                        action_type = "extraction"
+                    elif pattern_name == "form_action":
+                        action_type = "form"
+                    elif "type" in action_data:
+                        # Usar o tipo definido no próprio JSON
+                        action_type = action_data["type"]
+                    else:
+                        # Inferir o tipo baseado nas chaves presentes
+                        if "url" in action_data:
+                            action_type = "navigation"
+                        elif "selector" in action_data or "element" in action_data:
+                            action_type = "click"
+                        elif "extract" in action_data or "data" in action_data:
+                            action_type = "extraction"
+                        elif "form" in action_data or "inputs" in action_data:
+                            action_type = "form"
+                        else:
+                            action_type = "unknown"
+                except json.JSONDecodeError:
+                    # Não é JSON válido, tratar como texto
+                    action_type = "text"
+                    action_data = {"text": content}
+                    if self.debug_mode:
+                        logger.warning(f"Falha ao parsear ação como JSON: {content}")
+                        
+            # Registrar a ação no passo atual
+            if self.current_step:
+                # Encontrar o passo atual na timeline
+                for step in self.timeline:
+                    if step.get("step_number") == self.current_step:
+                        # Garantir que a lista de ações existe
+                        if "actions" not in step:
+                            step["actions"] = []
+                        
+                        # Adicionar ação
+                        step["actions"].append({
+                            "type": action_type,
+                            "data": action_data,
+                            "timestamp": datetime.now().isoformat(),
+                            "raw_message": message
+                        })
+                        
+                        # Registrar na timeline, se disponível
+                        if hasattr(self, 'timeline_builder'):
+                            # Determinar ícone com base no tipo de ação
+                            icon = "🔍"  # Ícone padrão para ação genérica
+                            if action_type == "navigation":
+                                icon = "🌐"
+                            elif action_type == "click":
+                                icon = "👆"
+                            elif action_type == "extraction":
+                                icon = "📊"
+                            elif action_type == "form":
+                                icon = "📝"
+                            
+                            # Preparar descrição compacta da ação
+                            description = self._create_action_description(action_type, action_data)
+                            
+                            # Adicionar à timeline
+                            self.timeline_builder.add_event(
+                                title=f"Ação: {action_type.capitalize()}",
+                                description=description,
+                                icon=icon,
+                                metadata={
+                                    "step_number": self.current_step,
+                                    "action_type": action_type,
+                                    "action_data": action_data
+                                }
+                            )
+                        
+                        logger.debug(f"Ação do tipo {action_type} adicionada ao passo {self.current_step}")
+                        break
+            
+            # Se não houver passo atual, registrar como desconhecido para análise posterior
+            else:
+                if hasattr(self, 'unknown_messages'):
+                    self.unknown_messages.append({
+                        "message": message,
+                        "action_content": content,
+                        "action_type": action_type,
+                        "timestamp": datetime.now().isoformat(),
+                        "reason": "Nenhum passo atual definido para associar a ação"
+                    })
+                logger.warning(f"Ação detectada mas nenhum passo atual: {action_type}")
+                
+        except Exception as e:
+            logger.error(f"Erro ao processar ação ({pattern_name}): {e}")
+            if hasattr(self, 'unknown_messages'):
+                self.unknown_messages.append({
+                    "message": message,
+                    "action_content": content,
+                    "timestamp": datetime.now().isoformat(),
+                    "error": str(e),
+                    "reason": "Erro ao processar ação"
+                })
+    
+    def _create_action_description(self, action_type, action_data):
+        """
+        Cria uma descrição legível para uma ação com base em seu tipo e dados.
+        
+        Args:
+            action_type (str): Tipo da ação
+            action_data (dict): Dados da ação
+            
+        Returns:
+            str: Descrição formatada da ação
+        """
+        if action_type == "navigation":
+            if "url" in action_data:
+                return f"Navegação para: {action_data['url']}"
+            else:
+                return "Navegação (URL não especificada)"
+                
+        elif action_type == "click":
+            if "selector" in action_data:
+                return f"Clique em: {action_data['selector']}"
+            elif "element" in action_data:
+                return f"Clique em: {action_data['element']}"
+            else:
+                return "Clique (elemento não especificado)"
+                
+        elif action_type == "extraction":
+            if "selector" in action_data:
+                return f"Extração de dados do elemento: {action_data['selector']}"
+            elif "data" in action_data:
+                data_keys = list(action_data["data"].keys()) if isinstance(action_data["data"], dict) else []
+                if data_keys:
+                    return f"Extração de dados: {', '.join(data_keys[:3])}" + ("..." if len(data_keys) > 3 else "")
+                else:
+                    return "Extração de dados"
+            else:
+                return "Extração de dados"
+                
+        elif action_type == "form":
+            if "form" in action_data and "selector" in action_data["form"]:
+                return f"Preenchimento de formulário: {action_data['form']['selector']}"
+            elif "inputs" in action_data:
+                input_count = len(action_data["inputs"]) if isinstance(action_data["inputs"], list) else 0
+                return f"Preenchimento de formulário com {input_count} campo(s)"
+            else:
+                return "Preenchimento de formulário"
+                
+        elif action_type == "text" or action_type == "generic":
+            if "text" in action_data:
+                text = action_data["text"]
+                # Limitar o tamanho do texto para a descrição
+                if len(text) > 50:
+                    return text[:47] + "..."
+                else:
+                    return text
+            else:
+                return "Ação genérica"
+                
+        else:
+            # Para outros tipos de ações, mostrar as primeiras chaves disponíveis
+            if isinstance(action_data, dict):
+                keys = list(action_data.keys())
+                if keys:
+                    key_values = []
+                    for key in keys[:3]:  # Mostrar no máximo 3 chaves
+                        value = action_data[key]
+                        if isinstance(value, (str, int, float, bool)):
+                            # Limitar o tamanho do valor
+                            str_value = str(value)
+                            if len(str_value) > 20:
+                                str_value = str_value[:17] + "..."
+                            key_values.append(f"{key}: {str_value}")
+                    
+                    return f"Ação {action_type}: {', '.join(key_values)}" + ("..." if len(keys) > 3 else "")
+            
+            return f"Ação {action_type}"
 
 def similarity_score(text1, text2):
     """
