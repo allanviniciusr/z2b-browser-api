@@ -1,0 +1,128 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+## Diretrizes para o Projeto Z2B Browser API
+
+1. **Compatibilidade com Windows**:
+   - Não altere as configurações de loop de eventos do asyncio (`WindowsSelectorEventLoopPolicy`) pois podem interferir com o funcionamento do Playwright.
+   - Evite modificações na inicialização de bibliotecas como Playwright que dependem de configurações específicas de plataforma.
+
+2. **Limpeza de Recursos**:
+   - Mantenha implementações robustas para `cleanup()` com tratamento adequado de exceções.
+   - Use `asyncio.wait_for()` com timeouts para operações que podem travar.
+   - Certifique-se de que referências são definidas como `None` após o fechamento.
+
+3. **Estrutura do Projeto**:
+   - Mantenha a classe `Z2BAgent` como extensão de `BrowserAgent` sem alterar sua interface básica.
+   - Preserve o mecanismo de seleção de implementação através da variável `AGENT_IMPLEMENTATION`.
+
+4. **Tratamento de Erros**:
+   - Implemente mecanismos de retry para operações de rede.
+   - Registre erros detalhados em logs sem suprimir exceções importantes.
+
+5. **Testes**:
+   - Use o script `test_agent_simple.py` para verificar a funcionalidade básica.
+   - Não modifique scripts de teste existentes sem necessidade comprovada.
+
+6. **Configurações**:
+   - Leia configurações do arquivo `.env` através de `load_dotenv()`.
+   - Mantenha valores padrão sensatos para todas as configurações.
+
+7. **Interoperabilidade**:
+   - Garanta que as implementações de `cleanup()` e outros métodos críticos funcionem corretamente em diferentes plataformas.
+   - Evite assumir comportamentos específicos de plataforma sem testes adequados.
+
+8. **Melhorias Seguras**:
+   - Ao implementar melhorias, mantenha a compatibilidade com código existente.
+   - Melhorias no gerenciamento de recursos são bem-vindas desde que não quebrem a compatibilidade.
+
+# PLANEJAMENTO ESTRUTURAL:   
+### Base
+- `src/agent/base/agent.py`  
+  - **Responsabilidade**: Implementação base de agente que define a interface e comportamentos fundamentais.  
+  - **Requisitos**:
+	  - Definir interface abstrata com métodos como `execute`, `setup`, `cleanup` e `run`
+	  - Gerenciar ciclo de vida do agente (inicialização, execução, finalização)
+	  - Implementar manejo básico de erros e recuperação
+	  - Integrar com navegador e LLM
+	  - Processar tarefas e retornar resultados
+- `src/agent/base/task.py`  
+  - **Responsabilidade**: Definir modelo de tarefas a serem executadas pelos agentes.  
+  - **Requisitos**:
+	  - Implementar classe `Task` com atributos como ID, tipo, dados e metadados
+	  - Suportar diferentes tipos de tarefas (navegação, extração, formulários)
+	  - Validar parâmetros de entrada da tarefa
+	  - Permitir serialização/deserialização para armazenamento
+	  - Prover métodos para acessar e modificar o estado da tarefa
+- `src/agent/base/result.py`  
+  - **Responsabilidade**: Definir modelo de resultados retornados após execução de tarefas.  
+  - **Requisitos**:
+	  - Implementar classe `TaskResult` com status, dados extraídos e erros
+	  - Capturar screenshots e URLs associados a resultados
+	  - Registrar duração e timestamps de execução
+	  - Armazenar mensagens de erro detalhadas quando aplicável
+	  - Implementar método `to_dict()` para serialização
+- `src/agent/base/browser_utils.py`  
+  - **Responsabilidade**: Implementar utilitários para interação com navegador usados pelos agentes.  
+  - **Requisitos**:
+	  - Fornecer funções auxiliares para operações comuns no navegador
+	  - Implementar detecção e tratamento básico de CAPTCHAs
+	  - Oferecer métodos para captura e processamento de screenshots
+	  - Facilitar a localização e interação com elementos DOM
+	  - Gerenciar eventos de navegação como redirecionamentos e popups
+### Custom (Revisado)
+- `src/agent/custom/z2b_agent.py`  
+  - **Responsabilidade**: Implementar agente base customizado do Zap2B com melhorias específicas.  
+  - **Requisitos**:
+	  - Estender a classe base de agente com funcionalidades específicas do Zap2B
+	  - Implementar tratamento avançado de erros e recuperação
+	  - Integrar com o sistema de prompts e o gerenciador de mensagens
+	  - Implementar reparo de JSON para respostas de diferentes modelos
+	  - Definir métodos para interação com o browser-use
+- `src/agent/custom/z2b_business_agent.py`  
+  - **Responsabilidade**: Implementar agente dinâmico que carrega instruções específicas de negócio da base de conhecimento.  
+  - **Requisitos**:
+	  - Herdar de Z2BAgent e estender com capacidade de consulta à base de conhecimento
+	  - Implementar métodos para carregar instruções de negócio por tipo de agente e ação
+	  - Manter cache inteligente de instruções frequentes
+	  - Consultar base de conhecimento externa via API quando necessário
+	  - Injetar instruções de negócio nos prompts em tempo de execução
+	  - Adaptar comportamento com base nas instruções específicas carregadas
+- `src/agent/custom/agent_registry.py`  
+  - **Responsabilidade**: Registrar e gerenciar tipos de agentes disponíveis no sistema.  
+  - **Requisitos**:
+	  - Manter registro de tipos de agentes configurados na plataforma
+	  - Fornecer interface para registro e consulta de tipos de agente
+	  - Associar tipos de agentes a metadados e requisitos específicos
+	  - Validar configurações de novos tipos de agentes
+	  - Gerenciar versões de configurações de agentes
+### Factory (Revisado)
+- `src/agent/factory/agent_factory.py`  
+  - **Responsabilidade**: Criar instâncias de agentes configurados dinamicamente com base no tipo.  
+  - **Requisitos**:
+	  - Implementar factory method para criar instâncias de Z2BBusinessAgent
+	  - Obter configurações específicas do tipo de agente do repositório de configuração
+	  - Inicializar agentes com configurações específicas do negócio
+	  - Injetar dependências como LLM, browser e base de conhecimento
+	  - Aplicar configurações específicas do cliente ao agente
+## Prompt Layer
+- `src/prompt/prompt_manager.py`  
+  **Responsabilidade**: Gerenciar prompts do sistema, selecionando e combinando templates apropriados.
+- `src/prompt/prompt_library.py`  
+  **Responsabilidade**: Manter biblioteca de templates de prompts para diferentes situações.
+- `src/prompt/prompt_renderer.py`  
+  **Responsabilidade**: Renderizar prompts com dados contextuais para uso em LLMs.
+### Templates
+- `src/prompt/templates/system_prompts.py`  
+  **Responsabilidade**: Definir prompts de sistema para configuração básica dos agentes.
+- `src/prompt/templates/task_prompts.py`  
+  **Responsabilidade**: Implementar prompts específicos para diferentes tipos de tarefas.
+### Coordinator
+- `src/agent/coordinator/agent_coordinator.py`  
+  **Responsabilidade**: Coordenar múltiplos agentes para tarefas complexas ou distribuídas.
+- `src/agent/coordinator/pipeline.py`  
+  **Responsabilidade**: Implementar pipeline de processamento para execução de tarefas em sequência.
+
+

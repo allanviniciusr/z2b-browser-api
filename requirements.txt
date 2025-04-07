@@ -1,0 +1,37 @@
+# Dependências do projeto original
+browser-use==0.1.40  # Para controle do navegador
+
+# Novas dependências para API e Queue
+fastapi==0.110.0  # Framework API
+uvicorn==0.27.1  # Servidor ASGI (mantido para compatibilidade)
+hypercorn>=0.15.0  # Servidor ASGI alternativo para melhor suporte no Windows
+python-dotenv==1.0.1  # Para variáveis de ambiente
+pydantic>=2.10.4  # Versão compatível com browser-use
+aio-pika==9.4.0  # Cliente RabbitMQ assíncrono
+python-multipart==0.0.9  # Para upload de arquivos
+
+# Dependências do LangChain (Core) - obrigatórias
+langchain-core  # Core do LangChain
+
+# Dependências do LangChain (Providers) - instale conforme necessário
+langchain-openai # Para OpenAI e OpenRouter
+langchain-google-genai>=2.1.0  # Para integração com Google AI (Gemini)
+langchain-mistralai>=0.2.4  # Para integração com Mistral AI
+# langchain-anthropic  # Para integração com Claude (Anthropic)
+# langchain-community  # Para integração com Ollama e outros modelos locais
+
+# Ferramentas adicionais
+MainContentExtractor==0.0.4  # Para extração de conteúdo
+json-repair  # Para correção de JSON malformado
+openai  # Para OpenRouter/OpenAI
+
+# Dependências para navegador
+playwright>=1.49.0  # Para automação do navegador
+requests>=2.32.3  # Para requisições HTTP
+aiohttp==3.9.3  # Para requisições HTTP assíncronas
+
+# Adicionar dependências para o WebSocket Bridge
+fastapi>=0.104.1
+uvicorn>=0.24.0
+aio-pika>=9.3.0
+websockets>=12.0

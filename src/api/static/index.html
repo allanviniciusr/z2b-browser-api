@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Z2B Browser API - Testes</title>
+    <link rel="icon" href="/static/img/favicon.ico" type="image/x-icon">
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        h1, h2, h3, h4 {
+            color: #2c3e50;
+        }
+        .container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        .card {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        input, select, textarea {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        button {
+            background-color: #3498db;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover {
+            background-color: #2980b9;
+        }
+        .status-panel {
+            background-color: #f8f9fa;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 15px;
+            margin-top: 20px;
+        }
+        .status-item {
+            margin-bottom: 10px;
+            padding: 10px;
+            border-radius: 4px;
+            background-color: #fff;
+        }
+        .status-pending {
+            background-color: #fff3cd;
+            border-left: 4px solid #ffc107;
+        }
+        .status-processing {
+            background-color: #cce5ff;
+            border-left: 4px solid #0d6efd;
+        }
+        .status-completed {
+            background-color: #d4edda;
+            border-left: 4px solid #28a745;
+        }
+        .status-error {
+            background-color: #f8d7da;
+            border-left: 4px solid #dc3545;
+        }
+        .error {
+            color: #dc3545;
+            margin-top: 5px;
+            font-size: 14px;
+        }
+        .success {
+            color: #28a745;
+            margin-top: 5px;
+            font-size: 14px;
+        }
+        .json-result {
+            background-color: #f8f9fa;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 10px;
+            margin-top: 10px;
+            white-space: pre-wrap;
+            font-family: monospace;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .task-type-section {
+            display: none;
+        }
+        .task-type-section.active {
+            display: block;
+        }
+        .task-status {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 4px;
+            background-color: #f8f9fa;
+        }
+        .task-step {
+            margin-top: 10px;
+            font-style: italic;
+            color: #6c757d;
+        }
+        .task-result {
+            margin-top: 10px;
+            padding: 10px;
+            background-color: #e9ecef;
+            border-radius: 4px;
+            white-space: pre-wrap;
+            font-family: monospace;
+        }
+        .rabbitmq-status {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 4px;
+            background-color: #e9ecef;
+        }
+        .rabbitmq-connected {
+            padding: 2px 6px;
+            color: white;
+            background-color: #4CAF50;
+            border-radius: 4px;
+            display: inline-block;
+        }
+        .rabbitmq-disconnected {
+            padding: 2px 6px;
+            color: white;
+            background-color: #f44336;
+            border-radius: 4px;
+            display: inline-block;
+        }
+        .rabbitmq-error {
+            padding: 2px 6px;
+            color: white;
+            background-color: #FF9800;
+            border-radius: 4px;
+            display: inline-block;
+        }
+        .monitor-btn {
+            margin-top: 10px;
+            background-color: #17a2b8;
+            font-size: 14px;
+            padding: 5px 10px;
+        }
+        /* Novos estilos para exibição do plano e screenshots */
+        .plan-panel {
+            background-color: #e8f4fd;
+            border: 1px solid #b8daff;
+            border-radius: 4px;
+            padding: 15px;
+            margin-top: 20px;
+        }
+        .plan-details ul {
+            padding-left: 20px;
+        }
+        .plan-details li {
+            margin-bottom: 5px;
+        }
+        .prompt-box {
+            background-color: #f8f9fa;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 10px;
+            margin-top: 10px;
+            font-family: monospace;
+            white-space: pre-wrap;
+        }
+        .screenshots-panel {
+            margin-top: 20px;
+        }
+        .screenshot-container {
+            margin-bottom: 20px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .screenshot-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 5px;
+            font-size: 0.9em;
+            color: #666;
+        }
+        .screenshot-description {
+            padding: 10px;
+            background-color: #e9ecef;
+            font-style: italic;
+        }
+        .screenshot-img {
+            max-width: 100%;
+            height: auto;
+            display: block;
+        }
+        /* Estilos RabbitMQ */
+        .rabbitmq-connected {
+            padding: 2px 6px;
+            color: white;
+            background-color: #4CAF50;
+            border-radius: 4px;
+            display: inline-block;
+        }
+        .rabbitmq-disconnected {
+            padding: 2px 6px;
+            color: white;
+            background-color: #f44336;
+            border-radius: 4px;
+            display: inline-block;
+        }
+        .rabbitmq-error {
+            padding: 2px 6px;
+            color: white;
+            background-color: #FF9800;
+            border-radius: 4px;
+            display: inline-block;
+        }
+        .monitor-btn {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 5px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-top: 5px;
+        }
+        .monitor-btn:hover {
+            background-color: #0056b3;
+        }
+        .info-box {
+            background-color: #e9f5fd;
+            border-left: 4px solid #17a2b8;
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+            font-size: 0.9em;
+        }
+        .log-container {
+            height: 150px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+            background-color: #f8f9fa;
+            font-family: monospace;
+            font-size: 0.9em;
+        }
+        .log-container div {
+            margin-bottom: 3px;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 3px;
+        }
+        .troubleshooting {
+            background-color: #fff3cd;
+            border-left: 4px solid #856404;
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+        }
+        .troubleshooting h4 {
+            margin-top: 0;
+            color: #856404;
+        }
+        .troubleshooting ul {
+            margin-top: 5px;
+            padding-left: 20px;
+        }
+        .error-title {
+            font-weight: bold;
+            font-size: 1.1em;
+            margin-bottom: 5px;
+            color: #721c24;
+        }
+        .error-message {
+            margin-bottom: 10px;
+        }
+        .btn-retry {
+            background-color: #17a2b8;
+            color: white;
+            border: none;
+            padding: 8px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-top: 10px;
+            display: inline-block;
+        }
+        .btn-retry:hover {
+            background-color: #138496;
+        }
+        .api-status-success {
+            background-color: #d4edda;
+            color: #155724;
+            padding: 10px;
+            margin-bottom: 10px;
+            border-radius: 4px;
+        }
+        .api-status-error {
+            background-color: #f8d7da;
+            color: #721c24;
+            padding: 10px;
+            margin-bottom: 10px;
+            border-radius: 4px;
+        }
+        .api-troubleshooting {
+            background-color: #fff3cd;
+            border-left: 4px solid #856404;
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+        }
+        .api-troubleshooting h5 {
+            margin-top: 0;
+            color: #856404;
+        }
+        .api-endpoints {
+            margin-top: 10px;
+        }
+        .endpoint-available {
+            color: #28a745;
+            padding: 3px 0;
+        }
+        .endpoint-unavailable {
+            color: #dc3545;
+            padding: 3px 0;
+        }
+        .config-panel {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 4px;
+            background-color: #f8f9fa;
+            border: 1px solid #ddd;
+        }
+        .btn-primary {
+            background-color: #3498db;
+            color: white;
+            border: none;
+            padding: 8px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-top: 10px;
+        }
+        .btn-primary:hover {
+            background-color: #2980b9;
+        }
+        .btn-secondary {
+            background-color: #f44336;
+            color: white;
+            border: none;
+            padding: 8px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-top: 10px;
+            margin-left: 10px;
+        }
+        .btn-secondary:hover {
+            background-color: #dc3545;
+        }
+    </style>
+</head>
+<body>
+    <h1>Z2B Browser API - Testes</h1>
+    
+    <div class="container">
+        <div class="card">
+            <h2>Criar Nova Tarefa</h2>
+            <form id="taskForm">
+                <div class="form-group">
+                    <label for="clientId">Client ID:</label>
+                    <input type="text" id="clientId" required>
+                </div>
+                
+                <div class="form-group">
+                    <label for="taskType">Tipo de Tarefa:</label>
+                    <select id="taskType" required>
+                        <option value="prompt">Prompt</option>
+                        <option value="plan">Plan</option>
+                    </select>
+                </div>
+                
+                <!-- Seção para tarefa do tipo Prompt -->
+                <div id="promptSection" class="task-type-section active">
+                    <div class="form-group">
+                        <label for="promptText">Prompt:</label>
+                        <textarea id="promptText" rows="4" required></textarea>
+                    </div>
+                </div>
+                
+                <!-- Seção para tarefa do tipo Plan -->
+                <div id="planSection" class="task-type-section">
+                    <div class="form-group">
+                        <label for="planSteps">Passos do Plano (um por linha):</label>
+                        <textarea id="planSteps" rows="4" required></textarea>
+                    </div>
+                </div>
+                
+                <button type="submit">Criar Tarefa</button>
+                <button type="button" id="createTaskDirectBtn" style="margin-left: 10px; background-color: #28a745;">Criar Tarefa (Alt)</button>
+            </form>
+            
+            <div id="taskResult" class="json-result" style="display: none;"></div>
+            <div id="taskError" class="error" style="display: none;"></div>
+            <div id="taskSuccess" class="success" style="display: none;"></div>
+        </div>
+        
+        <div class="card">
+            <h2>Status da Tarefa</h2>
+            <div class="form-group">
+                <label for="taskId">Task ID:</label>
+                <input type="text" id="taskId">
+                <button id="checkStatusBtn">Verificar Status</button>
+                <button id="refreshStatusBtn">Atualizar Status</button>
+            </div>
+            
+            <div id="taskStatus" class="task-status" style="display: none;">
+                <h3>Status da Tarefa: <span id="statusText"></span></h3>
+                <div id="taskStep" class="task-step"></div>
+                <div id="taskResultStatus" class="task-result" style="display: none;"></div>
+            </div>
+            
+            <!-- Painel para exibir o plano da tarefa -->
+            <div id="planPanel" class="plan-panel" style="display: none;">
+                <div id="planDetails" class="plan-details"></div>
+            </div>
+            
+            <div id="statusError" class="error" style="display: none;"></div>
+        </div>
+    </div>
+    
+    <!-- Painel para exibir screenshots -->
+    <div class="card screenshots-panel">
+        <h2>Screenshots da Tarefa</h2>
+        <div id="screenshots"></div>
+    </div>
+    
+    <div class="card">
+        <h2>Status do Sistema</h2>
+        <div class="test-websocket">
+            <h3>Conexão com RabbitMQ via WebSocket</h3>
+            <div class="websocket-controls">
+                <button id="startWebSocketBtn" class="btn-primary">Conectar ao RabbitMQ</button>
+                <button id="stopWebSocketBtn" class="btn-secondary" disabled>Desconectar</button>
+            </div>
+            <div class="info-box">
+                <p>Este WebSocket recebe eventos reais do RabbitMQ através de um bridge no servidor da API.</p>
+                <p>O RabbitMQ permanece como sistema principal de mensagens, mas os eventos são repassados para esta interface via WebSocket para facilitar a visualização.</p>
+                <h4>Configuração do RabbitMQ:</h4>
+                <ol>
+                    <li>Certifique-se de que o RabbitMQ está rodando (porta 5672)</li>
+                    <li>A API deve estar configurada para se conectar ao RabbitMQ</li>
+                    <li>A ponte WebSocket-RabbitMQ na API escutará eventos e os repassará para esta página</li>
+                </ol>
+            </div>
+            <div class="status-item">
+                Status: <span id="wsStatus" class="rabbitmq-disconnected">Desconectado</span>
+            </div>
+            <div id="wsLog" class="log-container"></div>
+        </div>
+        
+        <h3>Status das Filas</h3>
+        <div id="queueStatus" class="status-panel">
+            <div class="status-item">Carregando status das filas...</div>
+        </div>
+        
+        <h3>Status de Todas as Tarefas</h3>
+        <div id="allTasksStatus" class="status-panel">
+            <div class="status-item">Carregando status das tarefas...</div>
+        </div>
+        
+        <h3>Configurações da API</h3>
+        <div class="config-panel">
+            <p>Configure os endpoints da API abaixo:</p>
+            <div class="form-group">
+                <label for="apiBase">URL Base da API:</label>
+                <input type="text" id="apiBase" class="form-control" placeholder="Ex: /api">
+            </div>
+            <div class="form-group">
+                <label for="taskStatusEndpoint">Endpoint de Status de Tarefas:</label>
+                <input type="text" id="taskStatusEndpoint" class="form-control" placeholder="Ex: /tasks/status">
+            </div>
+            <div class="form-group">
+                <label for="taskCreateEndpoint">Endpoint de Criação de Tarefas:</label>
+                <input type="text" id="taskCreateEndpoint" class="form-control" placeholder="Ex: /tasks/create">
+            </div>
+            <button id="saveApiConfigBtn" class="btn-primary">Salvar Configurações</button>
+            <button id="resetApiConfigBtn" class="btn-secondary">Redefinir Padrões</button>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="/static/js/test-websocket.js"></script>
+    <script src="/static/js/ui-controller.js"></script>
+    <script>
+        // Inicializa a interface quando o documento estiver pronto
+        document.addEventListener('DOMContentLoaded', () => {
+            const ui = new UIController();
+            ui.init();
+            
+            // Adiciona event listener para o botão alternativo
+            document.getElementById('createTaskDirectBtn').addEventListener('click', () => {
+                console.log("Botão alternativo clicado");
+                ui.createTaskSimple();
+            });
+            
+            // Inicializa o WebSocket de teste
+            const testWs = new TestWebSocket();
+            
+            // Event listeners para os botões de controle do WebSocket
+            document.getElementById('startWebSocketBtn').addEventListener('click', () => {
+                testWs.start();
+                document.getElementById('startWebSocketBtn').disabled = true;
+                document.getElementById('stopWebSocketBtn').disabled = false;
+            });
+            
+            document.getElementById('stopWebSocketBtn').addEventListener('click', () => {
+                testWs.stop();
+                document.getElementById('startWebSocketBtn').disabled = false;
+                document.getElementById('stopWebSocketBtn').disabled = true;
+            });
+        });
+    </script>
+</body>
+</html> 
