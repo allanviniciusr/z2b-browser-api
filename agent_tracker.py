@@ -526,6 +526,90 @@ class TimelineBuilderExtended(TimelineBuilder):
             logger.error(f"Erro ao salvar arquivos de resumo: {e}")
         
         return output_file
+    
+    def save_timeline(self, filepath):
+        """
+        Salva a timeline em um arquivo JSON com estrutura enriquecida.
+        
+        Args:
+            filepath (str): Caminho do arquivo onde a timeline será salva
+            
+        Returns:
+            str: Caminho do arquivo salvo
+        """
+        # Calcular resumos
+        steps_summary = self.get_steps_summary()
+        thoughts_summary = self.get_thoughts_summary()
+        
+        # Calcular duração se possível
+        duration = None
+        if self.start_time and self.end_time:
+            duration = (self.end_time - self.start_time).total_seconds()
+            
+        # Criar estrutura completa da timeline com dados estendidos
+        timeline_data = {
+            "title": self.title,
+            "start_time": self.start_time.isoformat() if self.start_time else None,
+            "end_time": self.end_time.isoformat() if self.end_time else None,
+            "duration_seconds": duration,
+            "events": self.events,
+            "total_steps": len(self.steps),
+            "total_thoughts": thoughts_summary["thought_counts"]["total"]
+        }
+        
+        # Salvar no arquivo
+        try:
+            # Garantir que o diretório existe
+            os.makedirs(os.path.dirname(os.path.abspath(filepath)), exist_ok=True)
+            
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(timeline_data, f, indent=2, ensure_ascii=False)
+                
+            logger.info(f"Timeline salva em {filepath}")
+            return filepath
+        except Exception as e:
+            logger.error(f"Erro ao salvar timeline: {e}")
+            return None
+    
+    def get_timeline(self):
+        """
+        Retorna os dados da timeline formatados para uso externo.
+        
+        Returns:
+            dict: Dados completos da timeline
+        """
+        # Calcular resumos
+        steps_summary = self.get_steps_summary()
+        thoughts_summary = self.get_thoughts_summary()
+        
+        # Calcular duração se possível
+        duration = None
+        if self.start_time and self.end_time:
+            duration = (self.end_time - self.start_time).total_seconds()
+        
+        # Converter o dicionário de passos para uma lista
+        timeline_steps = []
+        for step_num, step_data in self.steps.items():
+            # Adicionar o número do passo no objeto de passo para manter consistência
+            step_copy = step_data.copy()
+            step_copy["step_number"] = step_num
+            timeline_steps.append(step_copy)
+        
+        # Ordenar os passos por número
+        timeline_steps.sort(key=lambda x: x.get("step_number", 0))
+        
+        return {
+            "title": self.title,
+            "start_time": self.start_time.isoformat() if self.start_time else None,
+            "end_time": self.end_time.isoformat() if self.end_time else None,
+            "duration_seconds": duration,
+            "timeline": timeline_steps,  # Agora é uma lista ordenada
+            "events": self.events,
+            "total_steps": len(self.steps),
+            "total_thoughts": thoughts_summary["thought_counts"]["total"],
+            "steps_summary": steps_summary,
+            "thoughts_summary": thoughts_summary
+        }
 
 class BrowserUseTracker:
     """
@@ -858,6 +942,440 @@ class BrowserUseLogInterceptor(logging.Handler):
         logger.info("Tracking de browser-use ativado")
         return True
         
+    def emit(self, record):
+        """
+        Processa um registro de log.
+        
+        Este método é obrigatório para todos os Handlers de logging e é 
+        chamado automaticamente pelo sistema de logging do Python quando
+        uma mensagem é registrada.
+        
+        Args:
+            record: O registro de log a ser processado
+        """
+        if not self.tracking_enabled:
+            return
+            
+        try:
+            # Formatar a mensagem do log
+            msg = self.format(record)
+            
+            # Processar apenas mensagens do módulo browser_use (mais eficiente)
+            if not record.name.startswith("browser_use"):
+                return
+                
+            # Verificar se a mensagem corresponde a algum dos padrões conhecidos
+            self._process_message(msg)
+        except Exception as e:
+            # Capturar qualquer erro para não quebrar o fluxo de logging
+            logger.error(f"Erro ao processar log no interceptador: {e}")
+    
+    def _process_message(self, message):
+        """
+        Processa uma mensagem de log para extrair informações.
+        
+        Args:
+            message (str): A mensagem de log formatada
+        """
+        # Verificar se é uma mensagem duplicada (para evitar processamento repetido)
+        if message in self.recent_messages:
+            return
+            
+        # Adicionar à lista de mensagens recentes
+        self.recent_messages.add(message)
+        
+        # Limitar o tamanho do cache de mensagens
+        if len(self.recent_messages) > self.message_cache_size:
+            self.recent_messages.pop()
+            
+        # Processar a mensagem com os padrões
+        matched = False
+        
+        # Verificar cada padrão por correspondência
+        for pattern_name, pattern in self.PATTERNS.items():
+            try:
+                match = re.search(pattern, message)
+                if match:
+                    matched = True
+                    
+                    # Processar de acordo com o tipo de padrão
+                    if pattern_name.startswith("step"):
+                        # Extrair número do passo
+                        step_number = int(match.group(1))
+                        self._process_step(step_number, pattern_name, message)
+                    elif pattern_name.startswith("eval"):
+                        # Processar avaliação
+                        self._add_thought_to_step("evaluation", match.group(2) if len(match.groups()) > 1 else match.group(1), message)
+                    elif pattern_name.startswith("memory"):
+                        # Processar memória
+                        self._add_thought_to_step("memory", match.group(1), message)
+                    elif pattern_name.startswith("next_goal") or pattern_name.startswith("goal"):
+                        # Processar próximo objetivo
+                        self._add_thought_to_step("next_goal", match.group(1), message)
+                    elif pattern_name.startswith("thought"):
+                        # Processar pensamento
+                        content = match.group(2) if len(match.groups()) > 1 else match.group(1)
+                        self._add_thought_to_step("thought", content, message)
+                    elif pattern_name.startswith("llm"):
+                        # Processar dados de LLM
+                        self._process_llm_data(pattern_name, match, message)
+            except Exception as e:
+                logger.error(f"Erro ao processar padrão {pattern_name}: {e}")
+                
+        # Se não corresponder a nenhum padrão conhecido, registrar como desconhecido
+        if not matched:
+            # Verificar se parece ser uma mensagem de pensamento ou passo
+            if any(keyword in message.lower() for keyword in ["thought", "thinking", "step", "memory", "goal", "eval"]):
+                if self.debug_mode:
+                    logger.debug(f"Mensagem potencialmente relevante sem correspondência: {message}")
+                
+                # Registrar para análise posterior
+                if hasattr(self, 'unknown_messages'):
+                    self.unknown_messages.append({
+                        "message": message,
+                        "timestamp": datetime.now().isoformat()
+                    })
+    
+    def _process_step(self, step_number, pattern_name, message):
+        """
+        Processa um passo identificado em uma mensagem de log.
+        
+        Args:
+            step_number (int): Número do passo identificado
+            pattern_name (str): Nome do padrão que identificou o passo
+            message (str): Mensagem completa
+        """
+        # Garantir que começa em 1, não em 0
+        if step_number <= 0:
+            logger.warning(f"Passo com número inválido {step_number}, ignorando")
+            return
+            
+        # Detectar se é o início ou fim do passo
+        is_start = pattern_name in ["step", "step_alt", "step_numeric", "z2b_step", "step_start"]
+        is_complete = pattern_name in ["step_complete", "z2b_step_complete"]
+        
+        # Inicializar passo 1 se este for o primeiro passo detectado e for maior que 1
+        if not self.timeline and step_number > 1:
+            # Criar um passo inicial implícito
+            self._create_implicit_step(1)
+            logger.debug(f"Passo 1 inicial criado implicitamente quando detectado passo {step_number}")
+        
+        # Verificar se o passo já existe na timeline
+        existing_step = None
+        for step in self.timeline:
+            if step.get("step_number") == step_number:
+                existing_step = step
+                break
+                
+        # Se o passo não existe e é um início de passo, criar um novo
+        if not existing_step and (is_start or not is_complete):
+            # Criar passo
+            self.timeline.append({
+                "step_number": step_number,
+                "start_timestamp": datetime.now().isoformat(),
+                "is_complete": False,
+                "message": message,
+                "thoughts": [],
+                "thoughts_by_category": {},
+                "llm_events": []
+            })
+            logger.debug(f"Novo passo {step_number} iniciado")
+            self.last_step_number = step_number
+            self.current_step = step_number
+            
+            # Criar entrada no dicionário de pensamentos por passo
+            if step_number not in self.thoughts_by_step:
+                self.thoughts_by_step[step_number] = []
+                
+            # Registrar na timeline se disponível
+            if hasattr(self, 'timeline_builder'):
+                self.timeline_builder.add_step(
+                    step_number=step_number,
+                    content=f"Passo {step_number} iniciado",
+                    status="in_progress"
+                )
+        
+        # Se o passo existe e é um fim de passo, marcá-lo como completo
+        elif existing_step and is_complete:
+            existing_step["is_complete"] = True
+            existing_step["end_timestamp"] = datetime.now().isoformat()
+            existing_step["duration_seconds"] = (datetime.fromisoformat(existing_step["end_timestamp"]) - 
+                                             datetime.fromisoformat(existing_step["start_timestamp"])).total_seconds()
+            logger.debug(f"Passo {step_number} completado")
+            
+            # Atualizar na timeline se disponível
+            if hasattr(self, 'timeline_builder'):
+                # Obter dados do passo para atualização
+                thoughts_by_category = existing_step.get("thoughts_by_category", {})
+                evaluation = thoughts_by_category.get("evaluation", [])
+                evaluation_text = evaluation[0] if evaluation else None
+                memory = thoughts_by_category.get("memory", [])
+                memory_text = memory[0] if memory else None
+                next_goal = thoughts_by_category.get("next_goal", [])
+                next_goal_text = next_goal[0] if next_goal else None
+                
+                # Determinar status com base na avaliação (se houver)
+                status = "completed"
+                if evaluation_text:
+                    if any(term in evaluation_text.lower() for term in ["success", "successfully", "completed", "conseguiu"]):
+                        status = "success"
+                    elif any(term in evaluation_text.lower() for term in ["fail", "failed", "not able", "couldn't", "could not", "erro", "falhou"]):
+                        status = "error"
+                    elif any(term in evaluation_text.lower() for term in ["partial", "partially", "uncertain", "unclear", "parcial"]):
+                        status = "warning"
+                        
+                # Atualizar o passo na timeline
+                self.timeline_builder.add_step(
+                    step_number=step_number,
+                    content=f"Passo {step_number} completado",
+                    is_complete=True,
+                    evaluation=evaluation_text,
+                    memory=memory_text,
+                    next_goal=next_goal_text,
+                    status=status
+                )
+            
+            # Se completou um passo, e temos um callback registrado, chamar
+            if self.callback:
+                # Preparar dados do evento
+                event_data = {
+                    "event_type": "browser_use.agent.step",
+                    "step": step_number,
+                    "is_complete": True,
+                    "timestamp": datetime.now().isoformat(),
+                    "all_thoughts": existing_step.get("thoughts", []),
+                    "thoughts_by_category": existing_step.get("thoughts_by_category", {})
+                }
+                
+                # Adicionar pensamentos específicos
+                for category in ["evaluation", "memory", "next_goal", "thought"]:
+                    thoughts = existing_step.get("thoughts_by_category", {}).get(category, [])
+                    if thoughts:
+                        event_data[category] = thoughts[0]  # Usar o primeiro pensamento de cada categoria
+                
+                # Invocar o callback de forma assíncrona
+                if asyncio.iscoroutinefunction(self.callback):
+                    # Criar uma task para o callback e adicioná-la ao conjunto
+                    task = asyncio.create_task(self.callback(event_data))
+                    self._pending_tasks.add(task)
+                    task.add_done_callback(self._pending_tasks.discard)
+                else:
+                    # Callback síncrono
+                    try:
+                        self.callback(event_data)
+                    except Exception as e:
+                        logger.error(f"Erro ao invocar callback: {e}")
+    
+    def _create_implicit_step(self, step_number):
+        """
+        Cria um passo implícito (não detectado explicitamente).
+        
+        Args:
+            step_number (int): Número do passo a ser criado
+        """
+        # Criar passo na timeline
+        self.timeline.append({
+            "step_number": step_number,
+            "start_timestamp": self.start_time.isoformat(),
+            "is_complete": False,
+            "message": f"[Passo {step_number} implícito]",
+            "thoughts": [],
+            "thoughts_by_category": {},
+            "llm_events": [],
+            "is_implicit": True
+        })
+        
+        # Criar entrada no dicionário de pensamentos por passo
+        if step_number not in self.thoughts_by_step:
+            self.thoughts_by_step[step_number] = []
+            
+        # Registrar na timeline se disponível
+        if hasattr(self, 'timeline_builder'):
+            self.timeline_builder.add_step(
+                step_number=step_number,
+                content=f"Passo {step_number} (inicializado implicitamente)",
+                status="in_progress",
+                metadata={"is_implicit": True, "is_first_step": step_number == 1}
+            )
+            
+        logger.debug(f"Passo {step_number} criado implicitamente")
+        self.last_step_number = step_number
+        self.current_step = step_number
+    
+    def _add_thought_to_step(self, thought_type, content, raw_message):
+        """
+        Adiciona um pensamento ao passo atual.
+        
+        Args:
+            thought_type (str): Tipo de pensamento (evaluation, memory, next_goal, thought)
+            content (str): Conteúdo do pensamento
+            raw_message (str): Mensagem completa do log
+        """
+        # Incrementar contador total
+        self.total_thoughts_detected += 1
+        
+        # Normalizar tipo de pensamento para categorias padrão
+        normalized_type = self._normalize_thought_type(thought_type)
+        
+        # Atualizar estatísticas
+        self._update_thought_stats(normalized_type)
+        
+        # Determinar a qual passo este pensamento pertence
+        step_number = self.current_step
+        
+        # Se não temos um passo atual, usar o último passo conhecido
+        if step_number is None:
+            if self.last_step_number > 0:
+                step_number = self.last_step_number
+            else:
+                # Inicializar passo 1 implicitamente
+                self._create_implicit_step(1)
+                step_number = 1
+        
+        # Criar pensamento
+        timestamp = datetime.now().isoformat()
+        thought = {
+            "type": normalized_type,
+            "original_type": thought_type,
+            "content": content,
+            "timestamp": timestamp,
+            "raw_message": raw_message
+        }
+        
+        # Verificar se o passo existe na timeline
+        step_exists = False
+        for step in self.timeline:
+            if step.get("step_number") == step_number:
+                step_exists = True
+                
+                # Verificar se é duplicado para evitar pensamentos repetidos
+                for existing_thought in step.get("thoughts", []):
+                    # Calcular similaridade - pensamentos quase idênticos são ignorados
+                    if existing_thought.get("content") == content or existing_thought.get("raw_message") == raw_message:
+                        logger.debug(f"Pensamento duplicado ignorado: {content[:30]}...")
+                        return
+                
+                # Adicionar pensamento ao passo
+                step["thoughts"].append(thought)
+                
+                # Adicionar ao dicionário por categoria
+                if normalized_type not in step["thoughts_by_category"]:
+                    step["thoughts_by_category"][normalized_type] = []
+                step["thoughts_by_category"][normalized_type].append(content)
+                
+                # Incrementar contador de processados
+                self.total_thoughts_processed += 1
+                break
+        
+        # Se o passo não existe na timeline (situação excepcional), criar
+        if not step_exists:
+            # Criar passo implícito
+            self._create_implicit_step(step_number)
+            
+            # Adicionar pensamento ao novo passo
+            for step in self.timeline:
+                if step.get("step_number") == step_number:
+                    # Adicionar pensamento
+                    step["thoughts"].append(thought)
+                    
+                    # Adicionar ao dicionário por categoria
+                    if normalized_type not in step["thoughts_by_category"]:
+                        step["thoughts_by_category"][normalized_type] = []
+                    step["thoughts_by_category"][normalized_type].append(content)
+                    
+                    # Incrementar contador
+                    self.total_thoughts_processed += 1
+                    break
+        
+        # Adicionar ao dicionário de pensamentos por passo
+        if step_number not in self.thoughts_by_step:
+            self.thoughts_by_step[step_number] = []
+        self.thoughts_by_step[step_number].append({
+            "step": step_number,
+            "category": normalized_type,
+            "texto": content,
+            "timestamp": timestamp
+        })
+        
+        # Registrar na timeline se disponível
+        if hasattr(self, 'timeline_builder'):
+            try:
+                self.timeline_builder.add_thought(
+                    step_number=step_number,
+                    thought_type=normalized_type,
+                    content=content,
+                    timestamp=timestamp
+                )
+            except Exception as e:
+                logger.error(f"Erro ao adicionar pensamento na timeline: {e}")
+        
+        # Se temos um callback de pensamento registrado, chamar
+        if self.callback_pensamento:
+            # Criar objeto de pensamento
+            pensamento_obj = {
+                "passo": step_number,
+                "tipo": normalized_type,
+                "tipo_original": thought_type,
+                "texto": content,
+                "timestamp": timestamp,
+                "mensagem_completa": raw_message,
+                "pensamentos_por_categoria": {}
+            }
+            
+            # Adicionar todos os pensamentos do passo atual
+            for step in self.timeline:
+                if step.get("step_number") == step_number:
+                    pensamento_obj["pensamentos_por_categoria"] = step.get("thoughts_by_category", {})
+                    pensamento_obj["todos_pensamentos"] = step.get("thoughts", [])
+                    break
+            
+            # Chamar callback
+            try:
+                self.callback_pensamento(pensamento_obj)
+            except Exception as e:
+                logger.error(f"Erro ao invocar callback_pensamento: {e}")
+    
+    def _normalize_thought_type(self, thought_type):
+        """
+        Normaliza o tipo de pensamento para categorias padrão.
+        
+        Args:
+            thought_type (str): Tipo original do pensamento
+            
+        Returns:
+            str: Tipo normalizado (evaluation, memory, next_goal, thought)
+        """
+        # Mapping para tipos normalizados
+        normalized_types = {
+            "evaluation": ["eval", "evaluation", "avaliação", "avaliacao", "assessment"],
+            "memory": ["memory", "memória", "memoria", "remembered"],
+            "next_goal": ["next_goal", "goal", "next", "objetivo", "próximo", "proximo"],
+            "thought": ["thought", "thinking", "pensamento", "reasoning", "raciocínio", "raciocinio"]
+        }
+        
+        # Verificar qual categoria normalizada corresponde ao tipo
+        thought_type_lower = thought_type.lower()
+        for normalized, variants in normalized_types.items():
+            if any(variant in thought_type_lower for variant in variants):
+                return normalized
+                
+        # Se não corresponder a nenhuma categoria conhecida, retornar "thought"
+        return "thought"
+    
+    def _update_thought_stats(self, category):
+        """
+        Atualiza estatísticas de pensamentos.
+        
+        Args:
+            category (str): Categoria de pensamento
+        """
+        # Garantir que categoria existe nas estatísticas
+        if category not in self.thought_stats:
+            self.thought_stats[category] = 0
+            
+        # Incrementar contador
+        self.thought_stats[category] += 1
+            
     async def _save_unknown_messages_periodically(self):
         """
         Salva periodicamente as mensagens desconhecidas no arquivo JSON.
@@ -973,324 +1491,46 @@ class BrowserUseLogInterceptor(logging.Handler):
         except Exception as e:
             logger.error(f"Erro ao salvar logs de pensamento: {str(e)}")
 
-    async def track_execution(self, agent, prompt, **kwargs):
-        """
-        Inicia o rastreamento da execução do agente
-        
-        Args:
-            agent: Instância do agente a ser rastreado
-            prompt: Prompt para execução do agente
-            **kwargs: Argumentos adicionais para o método execute_prompt_task
-            
-        Returns:
-            Resultado da execução do agente
-        """
-        self.set_prompt(prompt)
-        logger.info(f"Iniciando rastreamento do agente com prompt: '{prompt[:100]}...' (truncado)")
-        
-        try:
-            # Registrar evento de início
-            await self.process_event({
-                "type": "agent.start",
-                "prompt": prompt,
-                "timestamp": datetime.now().isoformat()
-            })
-            
-            # Instalar interceptador de logs do browser-use
-            self.log_interceptor = BrowserUseLogInterceptor(self.callback)
-            self.log_interceptor.instalar()
-            
-            # Tentar registrar callbacks no browser-use se disponível
-            # Isso é feito sem afetar o fluxo atual
-            try:
-                if hasattr(agent, 'z2b_agent') and agent.z2b_agent and hasattr(agent.z2b_agent, 'browser_agent'):
-                    browser_agent = agent.z2b_agent.browser_agent
-                    self.register_browser_use_callbacks(browser_agent)
-            except Exception as e:
-                logger.warning(f"Não foi possível registrar callbacks para o browser-use: {str(e)}")
-            
-            # Executar o agente com nosso callback
-            logger.info("Executando o agente com callback do tracker")
-            start_execution = time.time()
-            result = await agent.execute_prompt_task(prompt, callback=self.callback, **kwargs)
-            execution_time = time.time() - start_execution
-            
-            # Remover interceptador de logs
-            if hasattr(self, 'log_interceptor'):
-                self.log_interceptor.desinstalar()
-            
-            # Registrar evento de conclusão
-            await self.process_event({
-                "type": "agent.complete",
-                "result": result,
-                "execution_time_seconds": execution_time,
-                "summary": self.get_resumo_execucao(),
-                "timestamp": datetime.now().isoformat()
-            })
-            
-            # Salvar resumo em arquivo separado se auto_summarize estiver ativado
-            if self.auto_summarize:
-                resumo_file = os.path.join(self.log_dir, "execution_summary.json")
-                with open(resumo_file, "w", encoding="utf-8") as f:
-                    json.dump(self.get_resumo_execucao(), f, indent=2, ensure_ascii=False)
-                
-                # Salvar logs de pensamento também
-                self.save_thinking_logs()
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"Erro durante o rastreamento do agente: {e}")
-            
-            # Remover interceptador de logs em caso de erro
-            if hasattr(self, 'log_interceptor'):
-                self.log_interceptor.desinstalar()
-            
-            # Registrar o erro
-            await self.process_event({
-                "type": "agent.error",
-                "error": str(e),
-                "traceback": traceback.format_exc(),
-                "timestamp": datetime.now().isoformat()
-            })
-            
-            # Relançar a exceção para tratamento externo
-            raise
-
-    def get_unknown_messages(self):
-        """Retorna as mensagens desconhecidas capturadas para depuração"""
-        return self.unknown_messages
-         
-    def get_thoughts_summary(self):
-        """
-        Gera um resumo dos pensamentos capturados.
-        
-        Returns:
-            dict: Resumo de pensamentos por categoria e estatísticas.
-        """
-        # Contadores
-        total_pensamentos = self.total_thoughts_processed
-        
-        # Pensamentos por categoria
-        pensamentos_por_categoria = {}
-        for step_num, thoughts in self.thoughts_by_step.items():
-            for thought in thoughts:
-                category = thought.get("category", "unknown")
-                if category not in pensamentos_por_categoria:
-                    pensamentos_por_categoria[category] = []
-                pensamentos_por_categoria[category].append(thought)
-        
-        # Contagens por categoria
-        contagens_por_categoria = {
-            categoria: len(pensamentos)
-            for categoria, pensamentos in pensamentos_por_categoria.items()
-        }
-        
-        # Construir resumo
-        resumo = {
-            "total_pensamentos": total_pensamentos,
-            "pensamentos_por_categoria": contagens_por_categoria,
-            "categorias_detectadas": list(pensamentos_por_categoria.keys()),
-            "distribuicao_por_passo": {
-                step_num: len(thoughts)
-                for step_num, thoughts in self.thoughts_by_step.items()
-            }
-        }
-        
-        return resumo
-        
-    def get_steps_summary(self):
-        """
-        Gera um resumo dos passos processados.
-        
-        Returns:
-            dict: Resumo de passos e estatísticas.
-        """
-        if not self.timeline:
-            return {
-                "total_passos": 0,
-                "mensagem": "Nenhum passo processado ainda."
-            }
-            
-        # Contadores
-        total_passos = len(self.timeline)
-        passos_completos = sum(1 for step in self.timeline if step.get("is_complete", False))
-        
-        # Calcular tempos médios e totais
-        duracoes = []
-        for step in self.timeline:
-            if "start_timestamp" in step and "end_timestamp" in step:
-                start = datetime.fromisoformat(step["start_timestamp"])
-                end = datetime.fromisoformat(step["end_timestamp"])
-                duracao_segundos = (end - start).total_seconds()
-                duracoes.append(duracao_segundos)
-        
-        duracao_media = sum(duracoes) / len(duracoes) if duracoes else 0
-        duracao_total = sum(duracoes)
-        
-        # Taxas de sucesso baseado em avaliações
-        passos_com_avaliacao = 0
-        passos_sucesso = 0
-        
-        for step in self.timeline:
-            thoughts_by_category = step.get("thoughts_by_category", {})
-            avaliacoes = thoughts_by_category.get("evaluation", [])
-            
-            if avaliacoes:
-                passos_com_avaliacao += 1
-                for avaliacao in avaliacoes:
-                    conteudo = avaliacao.get("content", "").lower()
-                    if "success" in conteudo or "sucesso" in conteudo or "bem-sucedido" in conteudo:
-                        passos_sucesso += 1
-                        break
-        
-        taxa_sucesso = passos_sucesso / passos_com_avaliacao if passos_com_avaliacao > 0 else 0
-        
-        # Resumo por passo
-        resumo_passos = []
-        for step in self.timeline:
-            step_num = step.get("step")
-            pensamentos = step.get("thoughts", [])
-            
-            # Contar pensamentos por categoria
-            pensamentos_por_cat = {}
-            for thought in pensamentos:
-                cat = thought.get("category", "unknown")
-                if cat not in pensamentos_por_cat:
-                    pensamentos_por_cat[cat] = 0
-                pensamentos_por_cat[cat] += 1
-            
-            # Determinar status
-            status = "concluído" if step.get("is_complete", False) else "em andamento"
-            
-            # Calcular duração
-            duracao = None
-            if "start_timestamp" in step and "end_timestamp" in step:
-                start = datetime.fromisoformat(step["start_timestamp"])
-                end = datetime.fromisoformat(step["end_timestamp"])
-                duracao = (end - start).total_seconds()
-            
-            # Adicionar ao resumo
-            resumo_passos.append({
-                "passo": step_num,
-                "status": status,
-                "duracao_segundos": duracao,
-                "total_pensamentos": len(pensamentos),
-                "pensamentos_por_categoria": pensamentos_por_cat
-            })
-        
-        # Construir resumo completo
-        resumo = {
-            "total_passos": total_passos,
-            "passos_completos": passos_completos,
-            "taxa_completude": passos_completos / total_passos if total_passos > 0 else 0,
-            "duracao_media_segundos": duracao_media,
-            "duracao_total_segundos": duracao_total,
-            "passos_com_avaliacao": passos_com_avaliacao,
-            "passos_sucesso": passos_sucesso,
-            "taxa_sucesso": taxa_sucesso,
-            "detalhes_passos": resumo_passos
-        }
-        
-        return resumo
-        
-    def _process_llm_data(self, pattern_name, match, full_message):
-        """
-        Processa dados de LLM capturados de mensagens de log.
-        
-        Args:
-            pattern_name (str): Nome do padrão correspondido
-            match: Objeto de correspondência regex
-            full_message (str): Mensagem completa
-        """
-        try:
-            # Incrementar contador de chamadas de LLM
-            self.llm_stats["total_calls"] += 1
-            
-            if pattern_name in ["llm_request", "llm_request_alt"]:
-                # Processar requisição de LLM
-                if pattern_name == "llm_request":
-                    model, prompt, tokens = match.groups()
-                    tokens = int(tokens)
-                else:  # llm_request_alt
-                    model, tokens = match.groups()
-                    tokens = int(tokens)
-                    prompt = "N/A"  # Não disponível no formato alternativo
-                
-                # Atualizar estatísticas
-                self.llm_stats["total_tokens"] += tokens
-                
-                # Registrar modelo
-                if model not in self.llm_stats["models"]:
-                    self.llm_stats["models"][model] = {
-                        "requests": 0,
-                        "responses": 0,
-                        "tokens": 0,
-                        "cost": 0.0
-                    }
-                
-                self.llm_stats["models"][model]["requests"] += 1
-                self.llm_stats["models"][model]["tokens"] += tokens
-                
-                logger.debug(f"Requisição LLM registrada: modelo={model}, tokens={tokens}")
-                
-            elif pattern_name in ["llm_response", "llm_response_alt"]:
-                # Processar resposta de LLM
-                if pattern_name == "llm_response":
-                    model, response, tokens = match.groups()
-                    tokens = int(tokens)
-                else:  # llm_response_alt
-                    model, tokens = match.groups()
-                    tokens = int(tokens)
-                    response = "N/A"  # Não disponível no formato alternativo
-                
-                # Atualizar estatísticas
-                self.llm_stats["total_tokens"] += tokens
-                
-                # Registrar modelo
-                if model not in self.llm_stats["models"]:
-                    self.llm_stats["models"][model] = {
-                        "requests": 0,
-                        "responses": 0,
-                        "tokens": 0,
-                        "cost": 0.0
-                    }
-                
-                self.llm_stats["models"][model]["responses"] += 1
-                self.llm_stats["models"][model]["tokens"] += tokens
-                
-                logger.debug(f"Resposta LLM registrada: modelo={model}, tokens={tokens}")
-                
-            elif pattern_name in ["llm_cost", "llm_cost_alt"]:
-                # Processar custo de LLM
-                cost = float(match.group(1))
-                
-                # Atualizar estatísticas
-                self.llm_stats["estimated_cost"] += cost
-                
-                # Tentar determinar o modelo na mensagem
-                model_match = re.search(r"model[=:]([a-zA-Z0-9\-]+)", full_message)
-                if model_match:
-                    model = model_match.group(1)
-                    if model in self.llm_stats["models"]:
-                        self.llm_stats["models"][model]["cost"] += cost
-                
-                logger.debug(f"Custo LLM registrado: ${cost:.4f}")
-                
-        except Exception as e:
-            logger.error(f"Erro ao processar dados de LLM: {e}")
-    
-    def get_unknown_messages(self):
-        """Retorna as mensagens desconhecidas capturadas para depuração"""
-        return self.unknown_messages
-        
     def save_timeline(self, filepath):
-        """Salva a timeline em um arquivo JSON"""
-        return self.timeline_builder.save_timeline(filepath)
+        """
+        Salva a timeline em um arquivo JSON.
+        
+        Args:
+            filepath (str): Caminho do arquivo onde a timeline será salva
+            
+        Returns:
+            str: Caminho do arquivo salvo
+        """
+        if hasattr(self, 'timeline_builder') and self.timeline_builder:
+            return self.timeline_builder.save_timeline(filepath)
+        else:
+            logger.error("Não foi possível salvar a timeline: timeline_builder não disponível")
+            return None
      
     def get_timeline(self):
-        """Retorna a timeline completa"""
-        return self.timeline_builder.get_timeline()
+        """
+        Retorna a timeline completa.
+        
+        Returns:
+            dict: Dados completos da timeline
+        """
+        if hasattr(self, 'timeline_builder') and self.timeline_builder:
+            return self.timeline_builder.get_timeline()
+        else:
+            logger.warning("Não foi possível obter a timeline: timeline_builder não disponível")
+            return {"events": [], "total_steps": 0, "total_thoughts": 0}
+
+    def get_unknown_messages(self):
+        """
+        Retorna a lista de mensagens não categorizadas capturadas durante o rastreamento.
+        
+        Returns:
+            List[Dict]: Lista de mensagens desconhecidas com seus timestamps
+        """
+        if hasattr(self, 'unknown_messages'):
+            return self.unknown_messages
+        else:
+            return []
 
     def get_thoughts_for_step(self, step_number):
         """
@@ -1309,16 +1549,497 @@ class BrowserUseLogInterceptor(logging.Handler):
         Atualiza estatísticas de pensamentos.
         
         Args:
-            category (str): Categoria do pensamento.
+            category (str): Categoria de pensamento
         """
-        if category in self.thought_stats:
-            self.thought_stats[category] += 1
-        else:
-            self.thought_stats["unknown"] += 1
+        # Garantir que categoria existe nas estatísticas
+        if category not in self.thought_stats:
+            self.thought_stats[category] = 0
             
-        # Log para diagnóstico
-        categories_count = ", ".join([f"{k}: {v}" for k, v in self.thought_stats.items() if v > 0])
-        logger.debug(f"Estatísticas de pensamentos atualizadas: {categories_count}")
+        # Incrementar contador
+        self.thought_stats[category] += 1
+            
+    async def _save_unknown_messages_periodically(self):
+        """
+        Salva periodicamente as mensagens desconhecidas no arquivo JSON.
+        """
+        try:
+            while True:
+                await asyncio.sleep(30)  # Salvar a cada 30 segundos
+                if hasattr(self, 'unknown_messages') and self.unknown_messages and hasattr(self, 'unknown_messages_file'):
+                    try:
+                        with open(self.unknown_messages_file, 'w', encoding='utf-8') as f:
+                            json.dump(self.unknown_messages, f, indent=2, ensure_ascii=False)
+                        logger.debug(f"Mensagens desconhecidas salvas em {self.unknown_messages_file}")
+                    except Exception as e:
+                        logger.error(f"Erro ao salvar mensagens desconhecidas: {e}")
+        except asyncio.CancelledError:
+            # Tarefa cancelada, salvar uma última vez
+            if hasattr(self, 'unknown_messages') and self.unknown_messages and hasattr(self, 'unknown_messages_file'):
+                try:
+                    with open(self.unknown_messages_file, 'w', encoding='utf-8') as f:
+                        json.dump(self.unknown_messages, f, indent=2, ensure_ascii=False)
+                    logger.debug(f"Mensagens desconhecidas salvas em {self.unknown_messages_file} (final)")
+                except Exception as e:
+                    logger.error(f"Erro ao salvar mensagens desconhecidas (final): {e}")
+        except Exception as e:
+            logger.error(f"Erro em _save_unknown_messages_periodically: {e}")
+    
+    def get_resumo_execucao(self) -> Dict[str, Any]:
+        """
+        Gera um resumo da execução atual
+        
+        Returns:
+            Dict[str, Any]: Resumo da execução
+        """
+        duracao = (datetime.now() - self.start_time).total_seconds()
+        
+        return {
+            "prompt": self.prompt[:100] + "..." if self.prompt and len(self.prompt) > 100 else self.prompt,
+            "inicio": self.start_time.isoformat(),
+            "duracao_segundos": duracao,
+            "total_eventos": self.total_events,
+            "passos": self.steps_count,
+            "navegacoes": self.navigation_count,
+            "interacoes": self.interaction_count,
+            "screenshots": self.screenshot_count,
+            "erros": self.error_count,
+            "distribuicao_categorias": self.stats_por_categoria
+        }
+
+    def _process_llm_data(self, pattern_name, match, message):
+        """
+        Processa dados relacionados ao LLM capturados nos logs.
+        
+        Args:
+            pattern_name (str): Nome do padrão que identificou os dados de LLM
+            match (re.Match): Objeto match com os grupos capturados
+            message (str): Mensagem completa do log
+        """
+        try:
+            # Determinar o tipo de evento LLM
+            event_type = pattern_name
+            
+            # Extrair dados com base no tipo de padrão
+            if pattern_name == "llm_request" or pattern_name == "llm_request_alt":
+                # Capturar dados de requisição
+                if pattern_name == "llm_request":
+                    # Formato: "LLM Request: model=XXX, prompt=YYY, tokens=ZZZ"
+                    model = match.group(1).strip()
+                    prompt_summary = match.group(2).strip()
+                    prompt_tokens = int(match.group(3))
+                else:
+                    # Formato alternativo: "Sending request to XXX with YYY tokens"
+                    model = match.group(1).strip()
+                    prompt_tokens = int(match.group(2))
+                    prompt_summary = "N/A"
+                
+                # Registrar no tracking atual
+                self.llm_tracking["current_model"] = model
+                self.llm_tracking["current_prompt_tokens"] = prompt_tokens
+                self.llm_tracking["current_step"] = self.current_step
+                
+                # Criar evento
+                event_data = {
+                    "model": model,
+                    "prompt": prompt_summary[:100] + "..." if len(prompt_summary) > 100 else prompt_summary,
+                    "prompt_tokens": prompt_tokens,
+                    "timestamp": datetime.now().isoformat()
+                }
+                
+                # Registrar na timeline se disponível
+                if hasattr(self, 'timeline_builder') and self.current_step:
+                    self.timeline_builder.add_llm_event(
+                        step_number=self.current_step or 0,
+                        event_type="llm_request",
+                        data=event_data
+                    )
+                    
+                # Atualizar estatísticas
+                self.llm_stats["total_calls"] += 1
+                self.llm_stats["total_tokens"] += prompt_tokens
+                
+                # Registrar no modelo específico
+                if model not in self.llm_stats["models"]:
+                    self.llm_stats["models"][model] = {
+                        "calls": 0,
+                        "total_prompt_tokens": 0,
+                        "total_completion_tokens": 0,
+                        "total_cost": 0.0
+                    }
+                    
+                self.llm_stats["models"][model]["calls"] += 1
+                self.llm_stats["models"][model]["total_prompt_tokens"] += prompt_tokens
+                
+            elif pattern_name == "llm_response" or pattern_name == "llm_response_alt":
+                # Capturar dados de resposta
+                if pattern_name == "llm_response":
+                    # Formato: "LLM Response: model=XXX, response=YYY, tokens=ZZZ"
+                    model = match.group(1).strip()
+                    response_summary = match.group(2).strip()
+                    completion_tokens = int(match.group(3))
+                else:
+                    # Formato alternativo: "Received response from XXX with YYY tokens"
+                    model = match.group(1).strip()
+                    completion_tokens = int(match.group(2))
+                    response_summary = "N/A"
+                
+                # Registrar no tracking atual
+                self.llm_tracking["current_completion_tokens"] = completion_tokens
+                
+                # Criar evento
+                event_data = {
+                    "model": model,
+                    "response": response_summary[:100] + "..." if len(response_summary) > 100 else response_summary,
+                    "completion_tokens": completion_tokens,
+                    "timestamp": datetime.now().isoformat()
+                }
+                
+                # Registrar na timeline se disponível
+                if hasattr(self, 'timeline_builder'):
+                    self.timeline_builder.add_llm_event(
+                        step_number=self.current_step or self.llm_tracking.get("current_step", 0),
+                        event_type="llm_response",
+                        data=event_data
+                    )
+                    
+                # Atualizar estatísticas
+                self.llm_stats["total_tokens"] += completion_tokens
+                
+                # Registrar no modelo específico
+                if model not in self.llm_stats["models"]:
+                    self.llm_stats["models"][model] = {
+                        "calls": 0,
+                        "total_prompt_tokens": 0,
+                        "total_completion_tokens": 0,
+                        "total_cost": 0.0
+                    }
+                    
+                self.llm_stats["models"][model]["total_completion_tokens"] += completion_tokens
+                
+            elif pattern_name == "llm_cost" or pattern_name == "llm_cost_alt":
+                # Capturar dados de custo
+                cost = float(match.group(1))
+                
+                # Registrar no tracking atual
+                self.llm_tracking["current_cost"] = cost
+                
+                # Criar evento
+                event_data = {
+                    "cost": cost,
+                    "model": self.llm_tracking.get("current_model", "unknown"),
+                    "timestamp": datetime.now().isoformat()
+                }
+                
+                # Registrar na timeline se disponível
+                if hasattr(self, 'timeline_builder'):
+                    self.timeline_builder.add_llm_event(
+                        step_number=self.current_step or self.llm_tracking.get("current_step", 0),
+                        event_type="llm_cost",
+                        data=event_data
+                    )
+                    
+                # Atualizar estatísticas
+                self.llm_stats["estimated_cost"] += cost
+                
+                # Registrar no modelo específico se disponível
+                model = self.llm_tracking.get("current_model")
+                if model and model in self.llm_stats["models"]:
+                    self.llm_stats["models"][model]["total_cost"] += cost
+                
+            # Adicionar ao passo atual se existir
+            if self.current_step:
+                # Encontrar o passo na timeline
+                for step in self.timeline:
+                    if step.get("step_number") == self.current_step:
+                        # Garantir que a lista de eventos LLM existe
+                        if "llm_events" not in step:
+                            step["llm_events"] = []
+                            
+                        # Adicionar evento
+                        step["llm_events"].append({
+                            "type": event_type,
+                            "timestamp": datetime.now().isoformat(),
+                            "data": match.groups()
+                        })
+                        break
+            
+            logger.debug(f"Dados de LLM processados: {pattern_name}")
+            
+        except Exception as e:
+            logger.error(f"Erro ao processar dados de LLM ({pattern_name}): {e}")
+            
+    async def finish_tracking(self):
+        """
+        Finaliza o processo de rastreamento, salvando dados pendentes e limpando recursos.
+        
+        Este método deve ser chamado antes de desinstalar o interceptador para garantir que
+        todos os dados sejam salvos adequadamente.
+        
+        Returns:
+            Dict[str, Any]: Resumo dos dados capturados durante o tracking
+        """
+        if not self.tracking_enabled:
+            logger.warning("O tracking já estava desativado.")
+            return {}
+            
+        logger.info("Finalizando tracking de logs do browser-use...")
+        
+        try:
+            # Salvar mensagens desconhecidas uma última vez
+            if hasattr(self, 'unknown_messages') and self.unknown_messages and hasattr(self, 'unknown_messages_file'):
+                try:
+                    with open(self.unknown_messages_file, 'w', encoding='utf-8') as f:
+                        json.dump(self.unknown_messages, f, indent=2, ensure_ascii=False)
+                    logger.debug(f"Mensagens desconhecidas salvas em {self.unknown_messages_file} (final)")
+                except Exception as e:
+                    logger.error(f"Erro ao salvar mensagens desconhecidas (final): {e}")
+            
+            # Cancelar tarefa de salvamento periódico
+            if hasattr(self, '_save_unknown_messages_task'):
+                self._save_unknown_messages_task.cancel()
+                try:
+                    # Aguardar a tarefa ser cancelada
+                    await asyncio.wait_for(asyncio.shield(self._save_unknown_messages_task), timeout=2.0)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass  # Esperado quando a tarefa é cancelada
+            
+            # Finalizar timeline
+            if hasattr(self, 'timeline_builder'):
+                self.timeline_builder.stop_timer()
+                
+                # Registrar evento de encerramento na timeline
+                self.timeline_builder.add_event(
+                    title="Interceptador Desativado",
+                    description="Fim do tracking de logs do browser-use",
+                    icon="⏹️",
+                    timestamp=datetime.now().isoformat()
+                )
+                
+                # Salvar timeline se temos diretório de log
+                if self.log_dir:
+                    timeline_file = os.path.join(self.log_dir, "timeline.json")
+                    try:
+                        with open(timeline_file, 'w', encoding='utf-8') as f:
+                            json.dump({
+                                "title": self.timeline_builder.title,
+                                "start_time": self.start_time.isoformat(),
+                                "end_time": datetime.now().isoformat(),
+                                "events": self.timeline_builder.events,
+                                "total_steps": len([e for e in self.timeline_builder.events if "step_number" in e.get("metadata", {})]),
+                                "total_thoughts": self.total_thoughts_processed
+                            }, f, indent=2, ensure_ascii=False)
+                        logger.info(f"Timeline salva em {timeline_file}")
+                    except Exception as e:
+                        logger.error(f"Erro ao salvar timeline: {e}")
+            
+            # Calcular duração do tracking
+            duration = (datetime.now() - self.start_time).total_seconds()
+            
+            # Marcar tracking como desativado
+            self.tracking_enabled = False
+            
+            # Gerar resumo dos dados capturados
+            summary = {
+                "duration_seconds": duration,
+                "total_thoughts": self.total_thoughts_processed,
+                "thought_stats": self.thought_stats,
+                "total_steps": len(self.timeline),
+                "llm_stats": self.llm_stats,
+                "unknown_messages_count": len(self.unknown_messages) if hasattr(self, 'unknown_messages') else 0
+            }
+            
+            # Salvar resumo se temos diretório de log
+            if self.log_dir:
+                summary_file = os.path.join(self.log_dir, "tracking_summary.json")
+                try:
+                    with open(summary_file, 'w', encoding='utf-8') as f:
+                        json.dump(summary, f, indent=2, ensure_ascii=False)
+                    logger.info(f"Resumo do tracking salvo em {summary_file}")
+                except Exception as e:
+                    logger.error(f"Erro ao salvar resumo: {e}")
+            
+            # Salvar também os pensamentos capturados
+            if self.log_dir:
+                thoughts_file = os.path.join(self.log_dir, "thinking_logs.json")
+                try:
+                    # Extrair pensamentos de todos os passos
+                    all_thoughts = []
+                    for step in self.timeline:
+                        step_thoughts = []
+                        for thought in step.get("thoughts", []):
+                            step_thoughts.append({
+                                "step": step.get("step_number"),
+                                "type": thought.get("type"),
+                                "content": thought.get("content"),
+                                "timestamp": thought.get("timestamp")
+                            })
+                        all_thoughts.extend(step_thoughts)
+                    
+                    with open(thoughts_file, 'w', encoding='utf-8') as f:
+                        json.dump(all_thoughts, f, indent=2, ensure_ascii=False)
+                    logger.info(f"Pensamentos salvos em {thoughts_file}")
+                except Exception as e:
+                    logger.error(f"Erro ao salvar pensamentos: {e}")
+            
+            logger.info(f"Tracking finalizado após {duration:.1f} segundos")
+            logger.info(f"Total de pensamentos: {self.total_thoughts_processed}")
+            logger.info(f"Total de passos: {len(self.timeline)}")
+            
+            return summary
+            
+        except Exception as e:
+            logger.error(f"Erro ao finalizar tracking: {e}")
+            logger.error(traceback.format_exc())
+            self.tracking_enabled = False
+            return {
+                "error": str(e),
+                "total_thoughts": self.total_thoughts_processed,
+                "total_steps": len(self.timeline)
+            }
+
+    def desinstalar(self):
+        """
+        Remove o interceptador do sistema de logging e limpa recursos.
+        
+        Este método deve ser chamado para encerrar o interceptador após o uso.
+        Recomenda-se chamar finish_tracking() antes deste método para garantir
+        que todos os dados sejam salvos corretamente.
+        
+        Returns:
+            bool: True se o interceptador foi desinstalado com sucesso
+        """
+        try:
+            # Desativar tracking
+            self.tracking_enabled = False
+            
+            # Registrar evento de encerramento na timeline se disponível
+            if hasattr(self, 'timeline_builder'):
+                try:
+                    self.timeline_builder.add_event(
+                        title="Interceptador Desinstalado",
+                        description="Interceptador de logs removido do sistema",
+                        icon="🛑",
+                        timestamp=datetime.now().isoformat()
+                    )
+                except Exception as e:
+                    logger.error(f"Erro ao registrar evento de desinstalação: {e}")
+            
+            # Remover o handler do logger raiz
+            root_logger = logging.getLogger()
+            if self in root_logger.handlers:
+                root_logger.removeHandler(self)
+                
+            # Cancelar tarefas pendentes
+            for task in self._pending_tasks:
+                if not task.done():
+                    task.cancel()
+            
+            # Cancelar a tarefa de salvamento periódico se estiver ativa
+            if hasattr(self, '_save_unknown_messages_task') and self._save_unknown_messages_task and not self._save_unknown_messages_task.done():
+                try:
+                    self._save_unknown_messages_task.cancel()
+                except Exception as e:
+                    logger.error(f"Erro ao cancelar tarefa de salvamento: {e}")
+            
+            logger.info("Interceptador de logs desinstalado com sucesso")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Erro ao desinstalar interceptador: {e}")
+            logger.error(traceback.format_exc())
+            return False
+    
+    def get_thoughts_summary(self):
+        """
+        Gera um resumo estatístico dos pensamentos capturados durante o rastreamento.
+        
+        Este método analisa todos os pensamentos capturados e gera estatísticas
+        detalhadas sobre sua distribuição por categoria e por passo.
+        
+        Returns:
+            Dict[str, Any]: Resumo dos pensamentos capturados com estatísticas
+        """
+        # Inicializar contadores por categoria
+        thought_counts = {
+            "evaluation": 0,
+            "memory": 0,
+            "next_goal": 0,
+            "thought": 0,
+            "unknown": 0
+        }
+        
+        # Inicializar estruturas para análise
+        thoughts_by_step = {}
+        steps_with_thoughts = set()
+        total_thoughts = 0
+        
+        # Analisar pensamentos de cada passo
+        for step in self.timeline:
+            step_number = step.get("step_number", 0)
+            step_thoughts = {}
+            
+            # Contagem de pensamentos por categoria neste passo
+            if "thoughts_by_category" in step:
+                for category, thoughts_list in step["thoughts_by_category"].items():
+                    count = len(thoughts_list)
+                    if count > 0:
+                        # Incrementar contagem desta categoria
+                        if category in thought_counts:
+                            thought_counts[category] += count
+                        else:
+                            thought_counts["unknown"] += count
+                            
+                        # Registrar para este passo
+                        step_thoughts[category] = count
+                        total_thoughts += count
+                        steps_with_thoughts.add(step_number)
+            
+            # Armazenar contagens deste passo
+            if step_thoughts:
+                thoughts_by_step[step_number] = step_thoughts
+        
+        # Calcular total geral
+        total = sum(thought_counts.values())
+        
+        # Calcular distribuição percentual por categoria
+        distribution = {}
+        if total > 0:
+            for category, count in thought_counts.items():
+                distribution[category] = round((count / total) * 100, 2)
+        
+        # Construir resumo completo
+        summary = {
+            "total_thoughts": total,
+            "thought_counts": thought_counts,
+            "steps_with_thoughts": len(steps_with_thoughts),
+            "thoughts_by_step": thoughts_by_step,
+            "distribution_percent": distribution,
+            "average_thoughts_per_step": round(total / len(steps_with_thoughts), 2) if steps_with_thoughts else 0
+        }
+        
+        # Adicionar estatísticas sobre o processamento
+        if hasattr(self, 'total_thoughts_detected') and hasattr(self, 'total_thoughts_processed'):
+            summary["processing_stats"] = {
+                "detected": self.total_thoughts_detected,
+                "processed": self.total_thoughts_processed,
+                "processing_rate": round((self.total_thoughts_processed / self.total_thoughts_detected) * 100, 2) if self.total_thoughts_detected > 0 else 0
+            }
+        
+        return summary
+    
+    def _update_thought_stats(self, thought_type):
+        """
+        Atualiza as estatísticas de pensamentos por categoria.
+        
+        Args:
+            thought_type (str): O tipo normalizado de pensamento
+        """
+        # Garantir que categoria existe nas estatísticas
+        if thought_type not in self.thought_stats:
+            self.thought_stats[thought_type] = 0
+            
+        # Incrementar contador
+        self.thought_stats[thought_type] += 1
 
 def similarity_score(text1, text2):
     """
